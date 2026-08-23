@@ -10,7 +10,9 @@
 //! certificate, or PSK). It is its own client rather than a wrapper over an
 //! existing crate because the raw layer is the part the harness needs and
 //! no general client exposes it, and because PSK rules out the rustls-based
-//! clients; `docs/design.md` ADR A and ADR E hold the reasoning.
+//! clients; `docs/design.md` ADR A and ADR E hold the reasoning. A runnable
+//! `examples/subscribe-and-publish.rs` (added with the typed layer, ADR E)
+//! doubles as the documentation-grade client demo.
 
 pub mod client;
 pub mod raw;
