@@ -1,0 +1,22 @@
+[package]
+name = "pigeonhole-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Rust MQTT client for PidgeIoT pigeons: a raw framed connection for test harnesses and a typed client over it"
+
+[dependencies]
+pigeonhole-wire.workspace = true
+mqtt-proto.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+# Same TLS stack as the broker: a client must be able to do TLS-PSK as well
+# as certificate TLS, and rustls cannot do the former.
+openssl.workspace = true
+tokio-openssl.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

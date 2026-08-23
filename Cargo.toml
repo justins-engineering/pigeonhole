@@ -1,6 +1,59 @@
-[package]
-name = "pigeonhole"
+[workspace]
+members = [
+  "pigeonhole-wire",
+  "pigeonhole-client",
+  "pigeonhole",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/justins-engineering/pigeonhole"
+publish = false
 
-[dependencies]
+# One place for every version, so the three crates can never drift apart
+# on the codec or the runtime. Roles are explained where each is used;
+# docs/design.md ADR A is the decision record for the set.
+[workspace.dependencies]
+pigeonhole-wire = { path = "pigeonhole-wire" }
+pigeonhole-client = { path = "pigeonhole-client" }
+
+# MQTT 3.1.1 and 5 packet codec. The `tokio` feature swaps its async IO
+# traits to tokio's, which is what both ends here read and write.
+mqtt-proto = { version = "0.4", features = ["tokio"] }
+bytes = "1"
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "io-util",
+  "time",
+  "sync",
+  "signal",
+] }
+# The listener's TLS stack. OpenSSL rather than rustls because the one
+# listener serves both certificate and PSK ciphersuites, and rustls has
+# no PSK. Same stack loft uses for the same reason.
+openssl = "0.10"
+tokio-openssl = "0.6"
+# Upstream leg to dovecote's device routes: ordinary HTTPS, rustls is fine.
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "http2",
+] }
+# Device WebSocket dial (the shadow push feed).
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
+# Blocking client for the PSK resolver only: the PSK callback is a
+# synchronous OpenSSL callback invoked mid-handshake (see loft's psk.rs).
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"

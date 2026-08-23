@@ -1,1 +1,5 @@
-/target
+target/
+# The broker's VPS env file (holds PIGEONHOLE_SERVICE_SECRET) and any
+# locally issued dev certificate material.
+infra/pigeonhole.env
+scripts/dev-cert/
