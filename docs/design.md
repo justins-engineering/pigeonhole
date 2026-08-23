@@ -20,7 +20,7 @@ not yet verified and listed as an implementation-time check.
   keepalive, the things a Worker physically cannot do) and nothing else: every decision with
   meaning (does this token authorize this pigeon, what is the shadow, is a report accepted,
   what does the free-tier fuse say) is dovecote's, reached over the existing device routes.
-  See ADR 0.
+  See ADR G.
 - One session class: a pigeon. The connection is bound to exactly one pigeon by its handshake,
   so topics are session-scoped and carry no id (ADR C).
 - No cross-client fan-out. A publish never reaches another MQTT client; it becomes an HTTP
@@ -36,37 +36,10 @@ not yet verified and listed as an implementation-time check.
 
 ## 2. ADRs
 
-### ADR 0: thin bridge, fat Worker (the governing rule)
-
-Decision: the VPS process is the communication layer only. Terminate MQTT and translate; push
-every other concern to the edge. Concretely, these live in dovecote and its Durable Objects,
-never in the bridge:
-
-- Credential resolution and session authorization: PSK identity -> secret + token is dovecote's
-  internal route; the bearer token is verified by the DO on every bridged request; a
-  certificate session is authorized by its first device-route call (ADR D), so the bridge
-  makes no auth decision of its own.
-- Retained state: the retained value of `pigeon/shadow/target` is the DO's shadow, fetched from
-  it and refreshed by its pushes. The bridge caches the last-delivered bytes only to suppress a
-  duplicate redelivery, and that cache is disposable (a restart re-reads the shadow).
-- Shadow/telemetry/log semantics, the free-tier fuse, the billing counters, board checks:
-  all dovecote's, applied when the bridge forwards each publish as the matching device request.
-- Offline/will handling: a will is bridged as an ordinary publish from the session (ADR B), so
-  even "device went away" becomes a normal device-route call, not bridge-held state.
-
-What must stay on the bridge, because a Worker cannot do it: the TLS termination (including PSK
-ciphersuites), MQTT framing and the packet state machine, per-connection keepalive timers, and
-holding the two live sockets. That is the whole of it.
-
-Consequences, checked against the rest of the ADRs: an embedded broker or framework that drags
-in its own persistent router, session store, or message log is now disqualified on this rule,
-not just on ecosystem (ADR A). The Worker side needs exactly one new/generalized surface, the
-neutral internal credential route (ADR D/G); the will and offline paths need no new route
-because they reuse the device routes. The two places the line is genuinely tested, QoS 1 acks
-and the shadow push, are resolved in ADR B and ADR C respectively and both come out stateless:
-the ack waits on dovecote's durable accept rather than being issued early from a bridge buffer,
-and the push is a live upstream WS carrying the DO's own bytes rather than bridge-held shadow
-state.
+Read ADR G first: the thin-bridge / fat-Worker rule governs every other ADR, and each of A to
+D records where it complies with that rule and where the line had to sit on the VPS. ADR H
+decides the Worker topology; section 9 carries the performance and cost numbers the owner
+asked to see per ADR.
 
 ### ADR A: build the core; codec from a crate; tokio, not a framework
 
@@ -80,7 +53,7 @@ behind an in-process cache, exactly loft's split (checked in `~/loft/loft/Cargo.
 
 Alternatives:
 - Embed `rumqttd` (Apache-2.0, 0.20): a general fan-out broker with its own router and a
-  persistent commitlog. Disqualified by ADR 0 first: it PUBACKs when a publish is committed to
+  persistent commitlog. Disqualified by ADR G first: it PUBACKs when a publish is committed to
   its own log, which is exactly the bridge-held durable store the thin-bridge rule forbids, and
   it has a router/session store the bridge must not own. On top of that it has no per-session
   topic authorization hook, and its TLS is rustls/native-tls with no PSK (all checked). It does
@@ -126,7 +99,7 @@ Decision:
   contract.
 - QoS 2: a v3.1.1 PUBLISH is accepted with the full PUBREC/PUBREL/PUBCOMP exchange but at-
   least-once upstream semantics (forwarded at PUBLISH, no dedup store, since the dedup store
-  would be exactly the bridge-held state ADR 0 forbids); a v5 CONNACK advertises Maximum
+  would be exactly the bridge-held state ADR G forbids); a v5 CONNACK advertises Maximum
   QoS = 1 and a QoS 2 PUBLISH is then a protocol error (DISCONNECT 0x9B). SUBSCRIBE at QoS 2
   is granted at QoS 1.
 - Retained: `pigeon/shadow/target` is retained server-side (the retained value is the
@@ -182,7 +155,7 @@ from the topic. Accepted subscription filters: `pigeon/shadow/target`, `pigeon/s
 `pigeon/#`; all three mean "the shadow target". Any other filter gets SUBACK failure (v3:
 0x80, v5: 0x87) for that entry.
 
-How the device learns of shadow changes, and why this stays inside ADR 0: the bridge opens the
+How the device learns of shadow changes, and why this stays inside ADR G: the bridge opens the
 pigeon's device WS (`GET /device/pigeons/:id/ws`, `Authorization: Bearer <token>`) lazily on
 the first accepted shadow subscription and closes it with the session. This is a live upstream
 socket, not stored state: the retained value is always the DO's own bytes (the `shadow` member
@@ -195,17 +168,11 @@ is exponential backoff 1 s to 60 s with jitter while the subscription exists; cl
 ("replaced by new connection", checked in `objects/pigeons.rs`) means something else holds this
 pigeon's socket, so the bridge backs off to the ceiling and logs at warn rather than fighting.
 
-The line, stated honestly (ADR 0 asked for it): the push has to be a bridge-held live socket to
-the DO because a Worker cannot hold a socket to a VPS process and the DO is the only thing that
-knows when the shadow changed. The socket is connection state, in the same category as the MQTT
-session itself, so it does not break "no per-pigeon state"; what would break it, and is avoided,
-is caching shadow contents in the bridge or making the bridge the source of truth for any of it.
-
 Alternatives: polling `GET shadow` per session (no push, adds N edge requests per interval,
 raises device link traffic and latency, the exact thing the WS exists to avoid); the DO pushing
 to the bridge over HTTP (puts the bridge's address and "this pigeon is on MQTT" routing state
 into the DO, and has a DO reach a DNS-only host, more coupling for no latency win over the WS);
-a dedicated fan-out Worker (evaluated in ADR G, not needed because one pigeon has one MQTT
+a dedicated fan-out Worker (evaluated in ADR H, not needed because one pigeon has one MQTT
 session on one bridge instance, so the DO's one-device-WS rule already routes correctly, even
 multi-region); opening the WS at CONNECT for every session (publish-only sessions would each
 cost an idle WS and make `POST /pigeons/:id/shell` time out instead of 409 for them).
@@ -270,7 +237,7 @@ that cycle connections; MQTT's target devices do not, so it is not load-bearing.
 
 Dovecote-side contract changes (one atomic change across capsules/dovecote/fancier, since
 adding an enum variant breaks every `match`; the topology question, whether any of this instead
-belongs in a separate Worker, is ADR G, which concludes it does not):
+belongs in a separate Worker, is ADR H, which concludes it does not):
 1. `capsules::Connector::Mqtt(MqttConfig)` with
    `MqttConfig { endpoint: String, token: String, tls_psk_identity: Option<String>, tls_psk_secret: Option<String> }`
    (same shape as `CoapConfig`; the `connector` column is JSONB, so no schema change; checked
@@ -358,41 +325,74 @@ See section 8. Owner-gated throughout: DNS record, Let's Encrypt issuance on the
 deploy, production dovecote/fancier deploys, production pigeon creates, bench flashing of the
 C6, `git push`, `cargo publish`.
 
-### ADR G: Worker topology (one Worker or many)
+### ADR G: thin bridge, fat Worker (the governing rule)
 
-Decision: keep the edge as it is. The bridge addresses dovecote's existing device routes (the
-data path), the pigeon's existing device WebSocket (the push path), and one generalized
-internal route (`/internal/device-psk/:id`, ADR D) for credential resolution. No dedicated
-`pigeonhole-worker` is built now, because MQTT adds no new per-pigeon logic: every publish is
-one of the existing device routes, so a second Worker would only re-expose them and add a
-second wrangler config, a second secret set, and cross-Worker Durable Object bindings. The
-Durable Objects remain the single source of truth and are reached exactly as HTTPS and CoAP
-devices reach them today.
+Decision: the VPS bridge is the communication layer only. It terminates MQTT (TLS including the
+PSK ciphersuites, packet framing, the session state machine, keepalive timers) and holds the
+two live sockets per session (the device's MQTT connection, and while subscribed, the upstream
+device WebSocket). Everything else lives on the Cloudflare side, in dovecote and the per-pigeon
+Durable Objects:
 
-Where a separate Worker would earn its place, named so the seam is visible: a shadow-push
-fan-out point (if one DO shadow change ever had to reach many bridge instances at once) or a
-session-authorization service that grew state of its own. Neither is needed yet, and the push
-path in particular does not need it, since one pigeon has one MQTT session on one bridge
-instance and the DO's one-device-WS rule routes the push to that instance without a fan-out
-Worker, even across regions.
+- Credential resolution: PSK identity -> secret + token is dovecote's internal route; the
+  bearer token is verified by the owning DO on every bridged request.
+- Topic authorization: the bridge's "known leaf?" check (ADR C) is a pre-filter, not an
+  authority; a publish it let through to the wrong pigeon would carry this pigeon's token to
+  that pigeon's DO and be refused there. The decision is the DO's either way.
+- Retained state: the retained value of `pigeon/shadow/target` IS the DO's shadow, read from it
+  and refreshed by its pushes; the bridge never holds shadow contents as state.
+- Will/offline: a will is forwarded as an ordinary device-route publish; no bridge-held
+  offline state, no bridge-side offline detection beyond the socket closing.
+- Per-pigeon state of any kind: none. The bridge is stateless beyond in-flight QoS 1 (which
+  the device redelivers after a reconnect), loft's exact property: restartable with no data loss.
 
-Telemetry already rides dovecote's Cloudflare Queue (`TELEMETRY_QUEUE`, checked in
-`wrangler.toml`): a bridged telemetry publish becomes the same `POST .../telemetry` an HTTPS
-device sends, so it enters the same queue and consumer path with no MQTT-specific Worker or
-queue. That is the point of routing through the device routes rather than inventing a parallel
-ingestion path.
+Line-by-line audit of ADRs A to D against this rule:
 
-Alternatives: a dedicated `pigeonhole-worker` owning session authz, credential resolution, and
-bridge fan-in (more edge surface and cross-Worker DO bindings for logic that already exists on
-dovecote; revisit only at the fan-out/authz-state trigger above); the bridge talking to a
-Queue directly rather than through dovecote (bypasses the token verification the device route
-performs, breaking the "bridge is not a trusted proxy" rule); a new Worker just for the WS
-push (the device WS endpoint already exists and is hardware-verified).
+| ADR | Already compliant | Where the line had to sit on the VPS, and why |
+|---|---|---|
+| A | First-party core holds no router/log/session store; `mqtt-proto` is a codec, not a broker. `rumqttd` fails this rule outright (it PUBACKs at its own commitlog). | The session state machine and keepalive timers: a Worker cannot hold the TCP/TLS socket. |
+| B | Stateless sessions (`session_present` always 0, v5 Session Expiry 0); retained = the DO's shadow; QoS 2 uses no dedup store; will is a deferred device-route publish. | QoS 1 ack timing: the PUBACK is issued only when the upstream POST completes (2xx), so the ack's meaning is dovecote's durable accept, and nothing is buffered on the bridge. An earlier ack would require a bridge store or risk silent loss. |
+| C | Session-scoped topics mean no id to authorize; the retained bytes are the DO's; the "last delivered version" marker is a per-connection duplicate suppressor, dies with the socket. | The lazily opened device WS for shadow push: a Worker cannot hold a socket to a VPS process, so the push must ride a bridge-held live socket to the DO. It is connection state, not stored state. |
+| D | Auth is "GET shadow with the presented token": the DO decides, the bridge relays the verdict; PSK lookup is dovecote's route. | Admission counters (global/per-source permits, per-source CONNECT rate, 30 s handshake deadline): these protect the VPS itself from floods and exist only there by nature. Two caches, both bounded and expiring (below). |
 
-Performance: routing through the existing device routes means an MQTT telemetry report costs
-the edge exactly what an HTTPS or CoAP report costs (same Worker request, same DO invocation,
-same queue ops); MQTT adds only VPS CPU and memory, not Cloudflare spend. The cost model in
-section 9 works the numbers.
+Bridge-side caches, stated so they are not mistaken for state: the PSK cache (loft's: positive
+entries 60 s, negative 10 s, stale-positive grace only while dovecote is unreachable; bounded
+by the number of distinct identities seen in the window) and the negative auth cache (10 s, keyed
+by identity + sha256(password), bounded the same way). Both are pure accelerators against a
+dovecote request flood; losing them costs extra upstream lookups and nothing else, and neither
+can make the bridge answer differently from what dovecote would answer.
+
+Consequences: the Worker side needs exactly one new/generalized surface, the neutral internal
+credential route (ADR D); will and offline need no new route; and no component on the VPS may
+grow a durable store without reopening this ADR.
+
+### ADR H: Worker topology (one fat Worker or many thin ones)
+
+Options evaluated, with the edge request path a telemetry publish takes in each:
+
+| | (a) routes on dovecote (decided) | (b) dedicated `pigeonhole-worker` | (c) hybrid: bridge -> dovecote data path, separate Worker for session authz + push fan-out |
+|---|---|---|---|
+| Bridge addresses | dovecote device routes, device WS, `/internal/device-psk` | one Worker: `/mqtt/session`, `/mqtt/publish`, `/mqtt/events` (WS) | dovecote for publishes; the new Worker for CONNECT authz and a push feed |
+| Worker -> DO pattern, hops per publish | edge -> dovecote -> pigeon DO (1 Worker hop + 1 DO hop), identical to an HTTPS device | edge -> pigeonhole-worker -> pigeon DO via a cross-script DO binding (same hop count, second wrangler config, second secret set) | same as (a) for data; CONNECT pays one extra Worker hop |
+| Telemetry queue | dovecote's existing `TELEMETRY_QUEUE`, unchanged | either re-enqueue into the same queue (duplicate producer binding) or a parallel ingestion path that bypasses the route's token verification | same as (a) |
+| Shadow push | DO -> device WS -> bridge (exists, hardware-verified) | DO -> new fan-out path -> Worker -> bridge (new, and a Worker still cannot hold a socket to the VPS, so it ends up as a WS from the bridge anyway) | a new WS endpoint on the new Worker proxying the DO's push: one more hop, no latency win |
+| Deploy coupling | one Worker to deploy; capsules shapes shared as today | two Workers with cross-script DO bindings and shared secrets to keep in step | two Workers, split responsibilities to keep in sync |
+| Cold start / per-request cost | same per-request price as HTTPS/CoAP devices; no new Worker means no new cold-start surface | one more Worker request per publish (~$0.30/M), one more cold-start surface, more code paths between device and DO | extra cost only on CONNECT (rare) |
+
+Decision: (a). Performance is the tie-breaker and (a) has the fewest hops on the hot path (a
+publish is the same two-hop edge path an HTTPS device already uses, entering the same queue),
+the lowest per-request cost (no second Worker invocation), and the push path that already exists.
+(b) adds a hop, a cold-start surface, and a second deploy unit without reducing any edge work,
+because MQTT introduces no new per-pigeon logic: every publish is an existing device route.
+
+What would flip it: a need for shadow-push fan-out to many bridge instances for one pigeon
+(anycast bridges where the device's session and the DO's WS could land on different instances),
+or session-authorization logic that grows state of its own (rate plans per session, per-pigeon
+MQTT ACLs). Either would justify (c) first, a small authz/fan-out Worker beside dovecote, not (b).
+Neither exists now, and the DO's one-device-WS rule already routes the push to the one bridge
+instance that holds the session, even across regions.
+
+Alternatives beyond the table: the bridge producing to the telemetry Queue directly (bypasses the
+token verification the device route performs, breaking "the bridge is not a trusted proxy").
 
 ## 3. Sequence
 
@@ -404,7 +404,7 @@ device                    pigeonhole                         dovecote
   |-- CONNECT (user=id,pw=token | client_id=id) -->|             |
   |                          |-- GET /device/pigeons/:id/shadow  Bearer token -------->|
   |                          |<-- 200 PigeonShadow (401 -> CONNACK refused) -----------|
-  |<-- CONNACK 0 ------------|   retained[id] = body            |
+  |<-- CONNACK 0 ------------|   body seeds this connection's first retained delivery |
   |-- SUBSCRIBE pigeon/shadow/target -->|                              |
   |<-- SUBACK 1, PUBLISH retained shadow --|                    |
   |                          |-- WSS /device/pigeons/:id/ws  Bearer token ----------->|
@@ -416,7 +416,7 @@ device                    pigeonhole                         dovecote
   |                          |        dashboard PUT /pigeons/:id/shadow -> DO        |
   |                          |<-- shadow_update {shadow:{...}} --------------------------|
   |<-- PUBLISH retained pigeon/shadow/target (version changed) --|       |
-  |-- PUBLISH QoS1 shadow/report -->|                            |
+  |-- PUBLISH QoS1 pigeon/shadow/report -->|                     |
   |                          |-- POST .../shadow ----------------------------------->|
   |<-- PUBACK (on 200) ------|                                   |
   |-- DISCONNECT / drop ---->|   close WS; bridge will if ungraceful and set        |
@@ -424,25 +424,19 @@ device                    pigeonhole                         dovecote
 
 ## 4. Broker internals (module contracts)
 
-- `config`: env + credentials, fail closed on a missing secret or unreadable key/chain.
-- `tls`: one `SslContext`: cert chain + key, min TLS 1.2, PSK callback from loft's
-  `tls_common.rs` storing (identity, token) in ex_data. TLS 1.3 clients negotiate certificate
-  auth; PSK suites are TLS 1.2 (assumed: OpenSSL serves both from one context; verify at
-  implementation with `openssl s_client -psk` and a plain `s_client`).
-- `psk`: resolver + positive/negative cache; source = `GET /internal/device-psk/:id` via ureq.
-- `quota`: admission permits (RAII).
-- `auth`: turns (transport identity, CONNECT packet) into `Authenticated { pigeon_id, token,
-  shadow_seed }` or a CONNACK refusal, with the negative cache and the identity-agreement rule.
-- `session`: one task per connection. Reader half decodes packets with the size cap from
-  `pigeonhole-wire::framing`; a bounded (16) bridge queue executes publishes sequentially in
-  arrival order and emits acks on the outbound channel; the writer half serialises the outbound
-  channel (acks, retained pushes, PINGRESP); keepalive timer; will; takeover via a
-  `registry` map (pigeon id -> session handle). Version-neutral events; `proto/v3` and
-  `proto/v5` adapt.
-- `bridge`: the ack policy table (section 5); sets `Content-Type`; never parses payloads.
-- `shadow`: per-session retained feed: seed, lazy WS, change detection, backoff, 4009 policy.
-- `upstream`: reqwest client (`pigeonhole/<version>` UA, 30 s timeout, 10 s connect) and the
-  WSS dial (tokio-tungstenite) with the `Authorization` header.
+Each module's stub carries its own contract; the load-bearing points are: `tls` builds one
+`SslContext` (cert chain + key, min TLS 1.2, loft's PSK callback storing identity + token in
+ex_data; assumed: OpenSSL serves certificate and PSK suites from one context, verified at
+implementation with `openssl s_client -psk` and a plain `s_client`); `psk` is loft's resolver
+against `GET /internal/device-psk/:id`; `quota` is loft's RAII permits plus the CONNECT-rate and
+negative-auth caches; `auth` turns (transport identity, CONNECT) into an authenticated pigeon or
+a CONNACK refusal; `session` is one task per connection with a reader half (size-capped decode),
+a bounded (16) in-order bridge queue, a writer half serialising one outbound channel (acks,
+retained pushes, PINGRESP), the keepalive timer, the will, and a registry entry for takeover,
+over version-neutral events that `proto/v3` and `proto/v5` adapt; `bridge` owns the ack table
+(section 5) and never parses payloads; `shadow` is the per-session lazy WS feed with change
+detection, backoff, and the 4009 policy; `upstream` is the reqwest client (`pigeonhole/<version>`
+UA, 30 s / 10 s timeouts) and the WSS dial with the `Authorization` header.
 
 ## 5. Bridge ack policy
 
@@ -561,59 +555,76 @@ Phase 4, MQTT 5 and production:
 
 ## 9. Performance and cost model
 
-The unit of analysis is one connected device reporting telemetry every 30 s: 2 reports/min,
-2880/day, ~86,400/month, plus rare shadow changes and near-zero keepalive traffic (a report
-every 30 s resets the keepalive, so a device at this cadence sends almost no PINGREQ).
+Unit of analysis: one device, telemetry every 30 s (2880 reports/day), a handful of shadow
+changes per day, one connection held all day. Prices are Cloudflare list prices as understood at
+design time and are to be confirmed at billing; they are order-of-magnitude inputs, not the
+design's foundation.
 
-Round trips and bytes on the device link, per telemetry report:
-- QoS 0: one PUBLISH, no ack. Overhead over the payload is the fixed header (2 bytes) plus the
-  topic (`pigeon/telemetry`, 16 bytes as a 2-byte-prefixed string) = ~20 bytes; no packet id.
-  This matches what the device already does over the WS transport (fire-and-forget).
-- QoS 1: PUBLISH + PUBACK, so one extra 4-byte packet and one round trip, and a 2-byte packet
-  id on the PUBLISH. Choose it for shadow reports and log chunks; leave telemetry to the device.
-- The session-scoped topic (ADR C) is what keeps this small: an id-in-topic scheme would add
-  the 64-char pigeon id to every publish, ~65 bytes, ~187 KB/device/day at this cadence, for
-  no information the session does not already carry.
-- MQTT 5 topic aliases would shave the ~16-byte topic to 2 bytes after the first publish, but
-  against a 16-byte topic that saving is marginal, which is why v5 is chosen for reason codes,
-  not bytes (ADR B).
+Device link, per telemetry report (the bytes a cellular plan or a battery pays for):
 
-Latency:
-- Publish to PUBACK (QoS 1) is one device-to-bridge round trip plus one bridge-to-dovecote
-  round trip (the edge is network-close to the VPS), because the ack waits on dovecote's
-  durable accept (a telemetry 202 = queued; ADR 0's thin-bridge requirement, since acking from
-  a bridge buffer would either add bridge state or drop data on a crash).
-- Shadow push (dashboard PUT to device PUBLISH) is one DO broadcast over the already-open WS
-  plus one bridge-to-device PUBLISH: sub-second, the same path the device-WS transport already
-  demonstrates (~1 s observed there), versus a poll design's latency of up to one poll interval.
+| Item | MQTT 3.1.1 | MQTT 5 | Notes |
+|---|---|---|---|
+| PUBLISH overhead over payload, QoS 0 | 2 + 2 + 16 = 20 B | 21 B | fixed header, 2-byte length-prefixed topic `pigeon/telemetry` (16 B), v5 adds a 1-byte property length |
+| PUBLISH overhead, QoS 1 | 22 B (+2 B packet id) | 23 B | plus a 4 B PUBACK back, one extra round trip |
+| Id-in-topic scheme (rejected, ADR C) | +65 B per publish | +65 B | the 64-char pigeon id; ~187 KB/device/day at this cadence for no information the session lacks |
+| v5 topic alias after first publish | n/a | topic 2 B instead of 16 B | ~14 B saving per report against a 16 B topic: marginal, so v5 is chosen for reason codes, not bytes |
+| Payload | the flat JSON string map the HTTP route takes, byte-identical | same | no re-encoding on the bridge; a CBOR or line-protocol variant would be a dovecote contract change, not an MQTT one |
 
-Cloudflare cost drivers, per device per month at this cadence, list-price order-of-magnitude
-(figures to confirm at billing, not load-bearing for the design):
-- Worker requests: 86,400 telemetry `POST`s -> ~$0.026 at $0.30/M.
-- Durable Object: 86,400 invocations (token verify + latest-value upsert) -> ~$0.013 requests
-  at $0.15/M, plus a few GB-s of wall-clock -> under $0.001. The shadow-push WS is hibernated
-  while idle, so it bills no wall-clock between the rare pushes.
-- Queue: telemetry rides dovecote's existing `TELEMETRY_QUEUE`; a produce + consume per report
-  is the largest line, ~$0.07 at $0.40/M operations.
-- Total ~$0.10/device/month on Cloudflare, dominated by queue and request counts.
+Round trips: QoS 0 = 1 packet, no wait; QoS 1 = PUBLISH + PUBACK, where the PUBACK waits on the
+bridge's upstream POST (one edge round trip, ~20-60 ms VPS to edge), because the ack means
+dovecote's durable accept (ADR G). Keepalive at this cadence is near zero: every report resets
+the keepalive timer, so PINGREQ/PINGRESP (2 B each) are sent only on a quiet link.
 
-The load-bearing point: this is the same cost an HTTPS or CoAP device incurs, because a bridged
-publish becomes the identical device-route call and enters the identical queue/DO path (ADR G).
-MQTT adds only the VPS, whose marginal per-device cost at the expected fleet (hundreds to low
-thousands of mostly-idle sessions on one shared small box, loft's own sizing) is effectively
-zero: an idle session is a socket plus small buffers, and the shadow WS is hibernated at the
-edge.
+Connection setup, once per device-connection (amortized over a day at this cadence):
 
-What "unreasonable cost" would look like, so the owner can judge the line: an MQTT device
-costing materially more than an HTTPS/CoAP device for the same telemetry. The design avoids the
-three ways that happens, and each was a real fork in the ADRs: a billed DO wall-clock socket
-pinned per idle device around the clock (avoided by using the hibernatable device WS, not an
-in-memory one), a separate Worker request or a new durable store per report (avoided by reusing
-the existing device route and its queue), and a per-report handshake (avoided by the persistent
-session). A design that reintroduced any of those, for example polling `GET shadow` per session
-every interval, would multiply the request count and is rejected on exactly this basis.
+| Mode | Round trips after TCP | Handshake bytes | Notes |
+|---|---|---|---|
+| Certificate, TLS 1.3 | 1 | ~3-4 KB down (Let's Encrypt chain), ~0.3 KB up | the device verifies a chain, needs a CA store and a clock |
+| Certificate, TLS 1.2 | 2 | ~3-4 KB down | Zephyr mbedTLS default for a CA-verified socket |
+| PSK, TLS 1.2 | 2 | ~1 KB total | loft's figures for the same suites; no CA store, no clock |
+| Resumption (1.2 tickets / 1.3 PSK) | 1 | ~0.5 KB | on by default in OpenSSL, stateless tickets; only matters for devices that cycle connections |
+| CONNECT + CONNACK | 1 | cert mode ~250 B (id + id + 92-char token), PSK mode ~90 B | one extra edge round trip on the bridge side for the auth/seed shadow GET |
 
-Two figures are assumed and must be measured before production (T13): that Cloudflare imposes no
-per-source ceiling on the number of concurrent WebSocket connections the bridge opens to the
-edge for the shadow feeds, and the bridge's steady-state memory per idle session, which sets
-`MemoryMax` in the unit.
+Shadow push latency, dashboard PUT to device PUBLISH: DO broadcast over the open device WS (the
+same path the WS transport measured at ~1 s on hardware) plus one bridge-to-device PUBLISH;
+no polling interval in the path. A poll design would add up to one interval of latency and
+2880 extra edge requests per device per day at a 30 s poll.
+
+Cloudflare cost, per device per day at this cadence, option (a) of ADR H versus option (b):
+
+| Driver | (a) dovecote routes (decided) | (b) dedicated Worker | Unit price assumed |
+|---|---|---|---|
+| Worker requests | 2880 (one per POST) -> $0.00086 | 5760 if the new Worker fronts dovecote (two invocations per publish), or 2880 if it replaces it but then re-implements the device route -> $0.0017 / $0.00086 | $0.30/M |
+| Durable Object requests | 2880 (verify + upsert) -> $0.00043 | same 2880 | $0.15/M |
+| DO wall-clock | ~2880 x ~10 ms x 128 MB = ~3.7 GB-s -> $0.00005 | same | $12.50/M GB-s |
+| WS held open for the push | hibernated between pushes: no duration billed; the upgrade is 1 request/day | same, plus a second WS hop if the new Worker proxies it | |
+| Queue operations (existing `TELEMETRY_QUEUE`) | 2880 writes + 2880 reads/acks -> ~$0.0023 | same queue, same ops (or a parallel ingestion path, rejected in ADR H) | $0.40/M ops |
+| Per device per day | ~$0.004 | ~$0.005 (fronting) / ~$0.004 (replacing, with duplicated code) | |
+| Per device per month | ~$0.11 | ~$0.14 / ~$0.11 | |
+
+The load-bearing reading: under (a) an MQTT device costs the edge exactly what an HTTPS or CoAP
+device costs, because the bridged publish is the identical device-route call into the identical
+queue/DO path; the queue is the largest line and is the platform's existing telemetry-history
+design, not something MQTT adds. (b) is never cheaper and is slower by a hop on the hot path, so
+there is no speed-versus-cost trade to put to the owner here; ADR H's flip conditions are about
+future fan-out or authz state, not cost.
+
+VPS cost: an idle session is a socket plus small buffers and, while subscribed, one upstream WSS
+whose memory is rustls session state plus buffers; at the expected fleet (hundreds to low
+thousands of mostly idle sessions on the shared small box loft already sizes for) the marginal
+per-device cost is effectively zero. The per-session figure must be measured (below) to set
+`MemoryMax`.
+
+What "unreasonable cost" would look like, so the owner can judge the line: an MQTT device costing
+materially more on the edge than an HTTPS/CoAP device for the same telemetry (the design holds
+them equal), or the bridge needing a larger VPS tier than loft's box at the 4096-session ceiling.
+The three ways a design crosses that line, each a real fork taken above: a billed DO wall-clock
+socket pinned per idle device around the clock (avoided by the hibernatable device WS), a second
+Worker request or a new durable store per report (avoided by reusing the device route and its
+queue; the reason (b) loses), and a per-report handshake (avoided by the persistent session).
+Polling `GET shadow` per session would reintroduce 2880 requests/day and is rejected on exactly
+this basis.
+
+Assumed and to be measured before production (T13): that Cloudflare imposes no per-source ceiling
+on the number of concurrent WebSocket connections the bridge opens to the edge for the shadow
+feeds, and the bridge's steady-state memory per idle session, which sets `MemoryMax`.

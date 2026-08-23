@@ -3,7 +3,7 @@
 //! session-scoped (the handshake fixes the pigeon, so the id is not in the
 //! topic), and a bridge that turns each publish into the matching HTTP call
 //! on dovecote's device routes with the device's own bearer token, so every
-//! decision with meaning stays at the edge (ADR 0, the thin-bridge rule).
+//! decision with meaning stays at the edge (ADR G, the thin-bridge rule).
 //! The only other upstream leg is the pigeon's device WebSocket, opened on
 //! the device's behalf while it subscribes to its shadow, to turn dashboard
 //! config pushes into retained publishes. Concurrency model: one tokio task

@@ -1,9 +1,11 @@
 # Open questions for the owner
 
 Only what genuinely needs a ruling after the thin-bridge / deploy-shape / performance guidance,
-which is now folded into `design.md` (ADR 0, ADR E, ADR G, section 9) and no longer in
+which is now folded into `design.md` (ADR G, ADR H, ADR E, section 9) and no longer in
 question. Each item carries the recommended answer; the design is written as if the
-recommendation stands, so a different ruling means a revision there.
+recommendation stands, so a different ruling means a revision there. ADR H found no
+speed-versus-cost trade in the Worker topology (the decided option is both the fewest hops and
+the cheapest, section 9), so no "dedicated Worker yes/no" question is posed.
 
 1. **Hostname and port.** `mqtt.pidgeiot.com`, DNS-only A/AAAA to the same VPS as loft,
    TLS on 8883, no plaintext listener. No separate staging hostname: staging verification runs
