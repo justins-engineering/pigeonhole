@@ -232,6 +232,12 @@ impl Harness {
     .map_err(|e| e.to_string())
   }
 
+  /// The dev certificate the broker is serving, for a client that needs to
+  /// verify it.
+  pub fn ca_pem(&self) -> PathBuf {
+    self.ca_pem.clone()
+  }
+
   pub async fn shutdown(self) {
     self.broker.shutdown().await;
   }
