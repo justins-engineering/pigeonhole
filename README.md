@@ -41,7 +41,9 @@ What it handles:
   bad credentials.
 
 `docs/design.md` is the decision record (ADRs, topic and payload table, acknowledgement
-policy, phasing); `docs/open-questions.md` lists what awaits the owner's ruling.
+policy, phasing); `docs/open-questions.md` records the owner's rulings; `docs/verification.md`
+records what has actually been measured, including two design assumptions that turned out the
+other way round.
 
 ## Wire contract with the backend
 
@@ -82,6 +84,14 @@ cargo check
 cargo test
 ```
 
+The tests are most of the proof: the integration harness stands a real broker up in-process
+on an ephemeral port with a self-signed certificate and drives it over the wire against a mock
+backend, on both protocol versions. A protocol this size is not provable from unit tests
+alone, because most of what can go wrong is a sequence rather than a function.
+
+For a local loop with a real listener, `scripts/dev-cert.sh` issues an all-ECDSA local CA and
+server certificate; development runs TLS like every other deploy shape does.
+
 The bridge and the client link the system OpenSSL (the listener serves PSK ciphersuites, which
 rustls does not have), so `libssl-dev` or the distribution's equivalent is needed on a build
 host.
@@ -93,15 +103,15 @@ Two deploy shapes read the same environment-variable config (`PIGEONHOLE_LISTEN`
 `PIGEONHOLE_LOG`, and the `PIGEONHOLE_SERVICE_SECRET` shared with the backend):
 
 - **Production**: the bare binary under a systemd unit hardened to this process shape
-  (`infra/pigeonhole.service`, arriving with the infra task), the service secret and the TLS
-  key delivered through `LoadCredential=`.
+  (`infra/pigeonhole.service`), the service secret and the TLS chain and key all delivered
+  through `LoadCredential=` so none of them sits in the process environment.
 - **Self-hosting / development**: a small container image (`pigeonhole/Dockerfile`) and a
   `docker compose` example (`infra/docker-compose.yml`) that runs the bridge against a
   configurable `PIGEONHOLE_DOVECOTE_URL`, with the secret and TLS files bind-mounted. This is a
   documentation-grade path for developers who want to run the bridge themselves, not the
   production path.
 
-`docs/infra/mqtt-broker.md` will be the runbook for both.
+`docs/infra/mqtt-broker.md` is the runbook for both.
 
 ## License
 
