@@ -61,3 +61,6 @@ thiserror = "2"
 # Test-only. Property tests cover the parsers whose whole job is to refuse
 # almost everything (topics, framing caps).
 proptest = "1"
+# Self-signed certificates for the scripted TLS servers the client and
+# broker tests stand up; the real chain is Let's Encrypt.
+rcgen = "0.14"
