@@ -37,12 +37,17 @@ tokio = { version = "1", features = [
 # listener serves both certificate and PSK ciphersuites, and rustls has
 # no PSK. Same stack loft uses for the same reason.
 openssl = "0.10"
+# One control call the `openssl` crate has no binding for: the listener's
+# maximum send fragment (see pigeonhole/src/tls.rs).
+openssl-sys = "0.9"
 tokio-openssl = "0.6"
 # Upstream leg to dovecote's device routes: ordinary HTTPS, rustls is fine.
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "http2",
 ] }
+# Sink and Stream extension traits for the WebSocket feed.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Device WebSocket dial (the shadow push feed).
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "connect",
@@ -57,6 +62,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
+# Hashes the CONNECT password into a negative-cache key, so a device token
+# never sits in a map in the clear.
+sha2 = "0.10"
 
 # Test-only. Property tests cover the parsers whose whole job is to refuse
 # almost everything (topics, framing caps).
