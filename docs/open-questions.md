@@ -2,9 +2,13 @@
 
 Only what genuinely needs a ruling, updated after review round one (`design-review-1.md`,
 dispositions in `design-review-1-response.md`). Each item carries the recommended answer; the
-design is written as if the recommendation stands. ADR H found no speed-versus-cost trade in
-the Worker topology (the decided option is both the fewest hops and the cheapest, section 9),
-so no "dedicated Worker yes/no" question is posed.
+design is written as if the recommendation stands. Two candidates dissolved without needing a
+ruling: ADR H found no speed-versus-cost trade in the Worker topology (the decided option is
+both the fewest hops and the cheapest), and the QoS 0 over-the-WS fast path's one condition,
+free-tier fuse parity on the WS path, shipped platform-side during review (upgrade 429 when
+paused, close 4029 on a billable frame), so its adoption is unconditional and the remaining
+rate-cap alignment (bridge 40 versus DO 50 per 10 s) is a bridge-side implementation choice
+already made.
 
 1. **Hostname, port, address families.** `mqtt.pidgeiot.com`, DNS-only to the same VPS as
    loft, TLS on 8883, no plaintext listener; dual-stack bind, with the AAAA record published
@@ -17,19 +21,11 @@ so no "dedicated Worker yes/no" question is posed.
    context builder and resolver, and it is what the native_sim dev loop and constrained Zephyr
    builds want. Recommend: both from the first broker phase.
 
-3. **QoS 0 telemetry over the held device WS, and the fuse-parity work it is gated on.** The
-   adopted fast path (~$0.19 versus ~$0.25 per device-month, one hop lower latency, in-order)
-   requires the backend phase to add a free-tier fuse check to the DO's WS telemetry path,
-   which is also a pre-existing enforcement gap for WS devices: today a paused free-tier
-   device can keep ingesting over WS. That is a billing-enforcement scope call, not just an
-   MQTT one. Recommend: close the gap in the backend phase; until it lands the bridge routes
-   QoS 0 telemetry over the POST.
-
-4. **QoS 2 policy.** v3.1.1: accept with the full four-packet exchange but at-least-once
+3. **QoS 2 policy.** v3.1.1: accept with the full four-packet exchange but at-least-once
    upstream semantics; v5: advertise Maximum QoS 1 and treat QoS 2 as the protocol error the
    spec makes it. The alternative is refusing QoS 2 on both versions. Recommend: as designed.
 
-5. **Will and offline: bridge the will, add no offline route.** A Last Will is accepted only
+4. **Will and offline: bridge the will, add no offline route.** A Last Will is accepted only
    on the session's own publish topics and, on ungraceful disconnect, forwarded as an ordinary
    device-route publish (a will to `pigeon/telemetry` with `{"status":"offline"}` is the
    useful form), suppressed when a newer live session for the same pigeon exists so a
@@ -38,18 +34,18 @@ so no "dedicated Worker yes/no" question is posed.
    `updated_at`, so I do not recommend it now. Rule here if you want an explicit
    device-offline event in the platform.
 
-6. **Internal PSK route and secret naming.** The bridge uses the existing
+5. **Internal PSK route and secret naming.** The bridge uses the existing
    `/internal/coap-psk/:pigeon_id` name until the backend phase, which adds the neutral
    `/internal/device-psk/:pigeon_id` alias while in that code; dovecote's
    `COAP_SERVICE_SECRET` / `COAP_SERVICE_ALLOWED_IPS` names stay for this round (pigeonhole
    reads the same value as `PIGEONHOLE_SERVICE_SECRET`), renamed when loft's own cleanup
    touches its unit. Recommend: yes.
 
-7. **Bench scheduling.** The ESP32-C6 currently serves CoAP testing; the `mqtt_init` C6
+6. **Bench scheduling.** The ESP32-C6 currently serves CoAP testing; the `mqtt_init` C6
    target needs it flashed for MQTT. native_sim covers the e2e until then. Recommend: a
    scheduled window or a second C6; the design does not assume the board.
 
-8. **Certificate issuance and renewal.** certbot DNS-01 with a scoped Cloudflare API token on
+7. **Certificate issuance and renewal.** certbot DNS-01 with a scoped Cloudflare API token on
    the VPS (no inbound port 80), `--key-type ecdsa` pinned (the smaller chain; the device
    samples are configured against it), key and chain via `LoadCredential=`, renewal restarts
    the service through the SIGTERM drain (in-flight publishes acked, sessions closed with

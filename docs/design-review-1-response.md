@@ -1,10 +1,12 @@
 # Response to design review 1
 
-Disposition of every finding in `design-review-1.md`, against `design.md` as revised. Two
+Disposition of every finding in `design-review-1.md`, against `design.md` as revised. Three
 facts changed after the review was written and are folded in as current: dovecote now closes a
 pigeon's open device WS with 4004 (token revoked) / 4005 (pigeon deleted) from `token/refresh`
-and `delete`, and the DO telemetry store writes one merged-blob row per report regardless of
-key count. Where a finding's evidence was superseded by those facts the disposition says so.
+and `delete`; the DO telemetry store writes one merged-blob row per report regardless of key
+count; and the free-tier fuse now covers WS frames (upgrade 429 when paused, close 4029 on a
+billable frame while paused). Where a finding's evidence was superseded by those facts the
+disposition says so.
 
 | Finding | Disposition | What changed, where |
 |---|---|---|
@@ -22,7 +24,7 @@ key count. Where a finding's evidence was superseded by those facts the disposit
 | R12 | Accepted | Trust stated plainly: cert mode holds only what devices present; PSK mode holds the service secret and is trusted to loft's degree, hardened unit as mitigation (ADR D). |
 | R13 | Accepted, resolved structurally | With the WS opened at CONNECT there is no CONNECT-time GET copy at all: the live feed is the retained value, so a late SUBSCRIBE delivers the current target; change key is `target_version` alone (ADR C, ADR D). |
 | R14 | Accepted with a correction the review could not have known | DO requests 2x and queue ops 3x folded in; the per-key row model in item 3 was replaced platform-side by one merged row per report, so the recomputed totals are ~$0.25/device-month (POST path) and ~575 devices to the 50 M row allowance; storage and queue named as the dominant platform-wide lines (section 9). |
-| R15 | Accepted, adopted | QoS 0 telemetry rides the held WS as `telemetry` frames with POST fallback, ~$0.19 vs ~$0.25 per device-month and one hop shorter, in-order; gated on the backend fuse-parity check (a pre-existing WS enforcement gap), rate caps aligned 40 vs 50 per 10 s; WS moved to CONNECT, which also let the WS upgrade replace the shadow GET as session auth (ADR C, ADR B, section 9, T8). |
+| R15 | Accepted, adopted | QoS 0 telemetry rides the held WS as `telemetry` frames with POST fallback, ~$0.19 vs ~$0.25 per device-month and one hop shorter, in-order; rate caps aligned 40 vs 50 per 10 s; WS moved to CONNECT, which also let the WS upgrade replace the shadow GET as session auth. The one condition, fuse parity on the WS path, shipped platform-side during review (`WsInboundFrame::is_billable`, upgrade 429 when paused, close 4029 on a billable frame), so the adoption is unconditional and the bridge consumes 429/4029 (ADR C, ADR B, ADR D, section 9). |
 | R16 | Accepted | Upstream WS buffers tuned (4 KiB read/write, 64 KiB max message), `SSL_MODE_RELEASE_BUFFERS`, per-session budget target (tens of KiB idle, in-flight-cap bound under flood), `MemoryMax=1G` beside kratos 2G and loft 1536M, T13 measures (section 9, upstream stub). |
 | R17 | Accepted | On-air row added: TLS record + TCP framing makes QoS 1 vs QoS 0 ~110-160 B per report, ~340-460 KB/device-day at cadence (section 9, ADR B performance). |
 | R18 | Accepted | `SSL_CTX_set_max_send_fragment(4096)`, PSK suites first with server preference, send-timeout socket option planned in T10, mbedTLS content-length note in the device plan; nRF91 suite overlap kept, modem-store PSK path repeated as not yet hardware-verified (ADR D, section 6). |

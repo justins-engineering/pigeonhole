@@ -11,7 +11,9 @@
 //! substitute. Reconnect backs off 1 s to 60 s with jitter; close code
 //! 4009 (socket held by someone else) is terminal for this session's feed;
 //! 4004 (token revoked) and 4005 (pigeon deleted), which dovecote sends on
-//! refresh and delete, end the MQTT session itself with no redial. An
+//! refresh and delete, end the MQTT session itself with no redial; 4029
+//! (billable frame while fuse-paused) parks the feed at a fuse-scale
+//! backoff, since the upgrade would answer 429 until the account resumes. An
 //! inbound `shell_cmd` frame is answered immediately with a `shell_output`
 //! saying shell is not available over MQTT. Lands with the broker's
 //! implementation task.

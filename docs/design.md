@@ -197,6 +197,11 @@ Feed rules, each a review finding closed:
   from `token/refresh` and `delete` (shipped, in `docs/api.md`), end the MQTT session itself:
   the bridge sends v5 DISCONNECT 0x87 (4004) or 0x87 with a "deleted" reason string (4005),
   closes, and never redials with the dead token.
+- Close code 4029 (billable frame while the account is paused; shipped with the WS fuse) marks
+  the feed fuse-paused: no hot redial (the upgrade would answer 429), retry at a fuse-scale
+  backoff (minutes). A v5 session survives it, its QoS 1 publishes earning PUBACK 0x97 and QoS
+  0 telemetry falling to the POST where the same fuse answers; a v3.1.1 session is closed, its
+  only signal (section 5).
 
 Alternatives: opening the WS lazily on first subscribe (the earlier revision; dropped because
 auth then needs a separate shadow GET, QoS 0 telemetry loses its cheap path, and a stale
@@ -222,13 +227,13 @@ QoS 0 telemetry over the held WS, the trade evaluated (numbers in section 9): th
 costs one DO message billed 20:1 and no Worker request, no verify round trip, no per-report
 fuse query, about $0.05 per device-month less than the POST path and one edge hop lower
 latency, with in-order synchronous upserts (the queued POST path is only best-effort ordered).
-It is thin-bridge clean: the frame is exactly what a WS device sends. The costs: the DO's WS
-telemetry path has no free-tier fuse check today (a pre-existing enforcement gap for WS
-devices; the backend phase closes it with a DO-cached fuse verdict, and until that lands the
-bridge routes QoS 0 telemetry over the POST for fuse parity, one config flag), and the
-bridge's publish rate cap must sit under the DO's WS frame limit (40 versus 50 per 10 s).
-Decision: adopted, gated on the fuse-parity change; the fallback is the POST either way, so
-the flag is a routing choice, not a capability.
+It is thin-bridge clean: the frame is exactly what a WS device sends. The one cost that
+remained, free-tier fuse parity on the WS path, was closed platform-side while this design was
+in review: the fuse now covers WS frames (`WsInboundFrame::is_billable` inside the DO, in
+`docs/api.md`), refusing the upgrade with 429 on a paused account and closing an open socket
+with 4029 on a billable frame while paused. The bridge's publish rate cap sits under the DO's
+WS frame limit (40 versus 50 per 10 s). Decision: adopted, unconditionally; the POST remains
+the fallback whenever the socket is down.
 
 ### ADR D: auth and transport security
 
@@ -255,8 +260,10 @@ No plaintext 1883, ever (the CONNECT password is the device token).
   API's plain-text body is 0x05 (0x87); a 403 with an HTML body or edge-mitigation headers is
   edge security, not auth, and maps with 5xx to 0x03 (0x88), named in the stats line so a WAF
   event does not read as a fleet credential failure; 400 (malformed id, pre-filtered) is 0x02
-  (0x85). A deleted pigeon's DO currently answers 500 on device routes (checked: `one_row` on
-  an empty table); the backend phase makes that a 401 so deletion reads as permanent.
+  (0x85). A 429 on the upgrade is a paused free-tier account (the shipped WS fuse), CONNACK
+  0x97 on v5 and 0x03 on v3.1.1: valid credentials, come back later. A deleted pigeon's DO
+  currently answers 500 on device routes (checked: `one_row` on an empty table); the backend
+  phase makes that a 401 so deletion reads as permanent.
 - One identity, three places it may appear (PSK identity, username, client id); all present
   ones must agree or CONNACK 0x02 / 0x85.
 - Credential rotation and deletion mid-session, both directions now closed: a bridged publish
@@ -324,20 +331,19 @@ belongs in a separate Worker, is ADR H, which concludes it does not):
    lands the bridge calls the existing name; loft moves over at its own cleanup. The VPS v4
    egress address is already in the production allowlist; the v6 one joins it with the AAAA
    record.
-4. Free-tier fuse parity on the DO's WS `telemetry` path (a cached per-pigeon verdict inside
-   the DO): a pre-existing enforcement gap for WS devices, and the gate on routing QoS 0
-   telemetry over the WS (ADR C).
-5. `is_authorized_device` answers 401 instead of 500 when the pigeons table is empty, so a
+4. `is_authorized_device` answers 401 instead of 500 when the pigeons table is empty, so a
    deleted pigeon reads as permanent on every device route instead of as an outage.
-6. `docs/api.md`: "MQTT device surface (via the pigeonhole broker)" after the CoAP section,
+5. `docs/api.md`: "MQTT device surface (via the pigeonhole broker)" after the CoAP section,
    the connector note under `POST /flock/pigeons`, the type reference, and the
    connector-is-a-hint sentence.
-7. `fancier`: connector picker entry, badge, detail card (endpoint, username = id, password
+6. `fancier`: connector picker entry, badge, detail card (endpoint, username = id, password
    and PSK pair only at reveal time, one copy-pasteable `mosquitto_pub` line), `TokenReveal`.
 
 Already shipped ahead of this design (consumed, not proposed): `token/refresh` and `delete`
-close the pigeon's open device WS with 4004 "token revoked" / 4005 "pigeon deleted"
-(documented in `docs/api.md`); ADR C's feed rules act on both.
+close the pigeon's open device WS with 4004 "token revoked" / 4005 "pigeon deleted", and the
+free-tier fuse covers WS frames (`WsInboundFrame::is_billable`: upgrade 429 when paused, close
+4029 on a billable frame while paused; ping/pong and `shell_output` stay served), all
+documented in `docs/api.md`; ADR C's feed rules act on every one of these codes.
 
 Alternatives: PSK-only (no off-the-shelf client support; kills the adoption case); cert-only
 (loses the constrained path and the local native_sim loop, and would be the first device
@@ -435,8 +441,8 @@ upstream lookups and nothing else, and neither can make the bridge answer differ
 what dovecote would.
 
 Consequences: the Worker-side surface this design adds or consumes, listed so it stays small:
-the neutral internal credential route, the WS-path fuse check, the 401-on-empty fix (all
-ADR D's contract list), and the already-shipped 4004/4005 rotation and deletion closes. Will
+the neutral internal credential route and the 401-on-empty fix (ADR D's contract list), plus
+the already-shipped 4004/4005 rotation and deletion closes and the WS fuse (429/4029). Will
 and offline need no new route, and no component on the VPS may grow a durable store without
 reopening this ADR.
 
@@ -527,7 +533,7 @@ land in order, which the queued POST path only best-effort guarantees.
 | 400 / 404 / 413 (permanent, not retryable) | PUBACK, logged | PUBACK 0x99 (400) / 0x80 |
 | 401 / 403 (API-shaped body) | close | DISCONNECT 0x87 |
 | 403 with an HTML body / edge-mitigation headers | treated as 5xx (edge security, not auth); named in the stats line | same |
-| 429 (free-tier fuse: delayed, not lost) | no PUBACK, close | PUBACK 0x97 Quota exceeded, session kept: the v5 client learns the reason, requeues, and keeps its push feed |
+| 429 (free-tier fuse: delayed, not lost) | no PUBACK, close | PUBACK 0x97 Quota exceeded, session kept: the v5 client learns the reason and requeues (the feed itself may be fuse-paused per ADR C's 4029 rule) |
 | 5xx / timeout / unreachable | no PUBACK, close | no PUBACK, DISCONNECT 0x89 |
 
 Redelivery after a close is the client's responsibility, and the spec guarantees it only for a
@@ -596,7 +602,8 @@ owner, not an assumption.
   packet, rate caps, per-identity failure budget, takeover with will suppression, will
   delivery when genuinely alone, retained delivery on subscribe, push on `shadow_update`
   keyed by `target_version`, feed liveness (missed pongs force reconnect), 4009 terminal,
-  4004/4005 ending the session, `shell_cmd` answered, keepalive expiry, SIGTERM drain
+  4004/4005 ending the session, 429-on-upgrade and 4029 fuse handling, `shell_cmd` answered,
+  keepalive expiry, SIGTERM drain
   (in-flight acked, 0x8B sent). Multi-thread runtime throughout (ADR A).
 - Live: the typed client against a local broker pointed at `dovecote-staging` in certificate
   mode (needs no staging allowlist change, since cert auth uses only public device routes);
@@ -644,12 +651,10 @@ Phase 1, the bridge (this repo):
 Phase 2, backend contract (`~/pidgeiot`), one atomic change that compiles at every commit:
 - T8 capsules + dovecote: `Connector::Mqtt(MqttConfig)`; `build_mqtt_endpoint` +
   `MQTT_DEVICE_HOST` x3; mint/refresh/strip for `Mqtt`; PSK handler generalised +
-  `/internal/device-psk/:id` alias; WS-path fuse check; `is_authorized_device` 401 on empty;
-  `docs/api.md` MQTT section. Accept: curl matrix against `wrangler dev` (create Mqtt pigeon,
-  token + PSK returned once, GET stripped, refresh rotates and closes with 4004, delete
-  closes with 4005, internal route 200 for Mqtt / 404 for Https, fuse verdict honored on a WS
-  telemetry frame); staging deploy (pre-approved). The bridge flips QoS 0 telemetry to the WS
-  frame path after this lands.
+  `/internal/device-psk/:id` alias; `is_authorized_device` 401 on empty; `docs/api.md` MQTT
+  section. Accept: curl matrix against `wrangler dev` (create Mqtt pigeon, token + PSK
+  returned once, GET stripped, refresh rotates and closes with 4004, delete closes with 4005,
+  internal route 200 for Mqtt / 404 for Https); staging deploy (pre-approved).
 - T9 fancier: picker, badge, detail card, reveal, docs page, connector-is-a-hint wording.
   Accept: release build + Playwright pass on the pigeon detail and create flows; staging
   deploy.
@@ -718,8 +723,8 @@ invocation per POST; it is never cheaper, so it is priced once here and not agai
 | Total | ~$0.25 | ~$0.19 | |
 
 The fast path saves ~$0.05 per device-month (~21 %) and one edge hop, and its synchronous
-upsert keeps rapid reports in order; that is the trade ADR C records, adopted behind the
-fuse-parity gate. Queue operations and storage rows dominate either path and are platform-wide
+upsert keeps rapid reports in order; that is the trade ADR C records, adopted (its one
+condition, fuse parity on the WS path, shipped platform-side during review). Queue operations and storage rows dominate either path and are platform-wide
 (HTTPS, CoAP, WS, MQTT identical), so the load-bearing reading stands: an MQTT device costs
 the edge what any other device costs, and MQTT adds only the VPS. The included 50 M rows
 written per month are exhausted by roughly 575 devices at this profile fleet-wide; that number
