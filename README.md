@@ -16,9 +16,11 @@ a device redelivers on its own.
 
 What it handles:
 
-- **MQTT 3.1.1 over TLS on 8883**, MQTT 5 behind the same sessions once the device samples
-  exist. No plaintext listener. QoS 0 and 1; QoS 2 accepted on 3.1.1 with at-least-once
-  upstream delivery, refused with a reason code on 5.
+- **MQTT 5 and 3.1.1 over TLS on 8883**, v5 the primary target, 3.1.1 beside it for the
+  clients that speak it today (Zephyr's in-tree client among them). No unencrypted traffic,
+  ever: no plaintext listener in any deploy shape, dev included. QoS 0 and 1; QoS 2 is not
+  offered, spec-faithfully on both versions (v5 advertises Maximum QoS 1 and refuses with a
+  reason code; 3.1.1, which cannot advertise, refuses by closing).
 - **Two handshakes on one listener.** Certificate TLS (Let's Encrypt) with CONNECT
   username = pigeon id and password = the pigeon's device bearer token, the shape every
   off-the-shelf client expects; and TLS-PSK with the pigeon's minted PSK, for constrained

@@ -82,26 +82,39 @@ it has a single author, and at ~6k lines it is vendorable if it ever goes quiet.
 ### ADR B: protocol versions and features
 
 Decision:
-- MQTT 3.1.1 first; MQTT 5 in the final phase, through a version-neutral internal event
-  model (`session.rs` sees `Connect`/`Publish`/`Subscribe`/... events; `proto/v3.rs` and
-  `proto/v5.rs` adapt). v5 is wanted because reason codes make the bridge honest (section 5)
-  and because off-the-shelf v5 clients exist. Zephyr 4.4.1's client defaults to 3.1.1 and
-  marks 5.0 EXPERIMENTAL (checked), so the device connector targets 3.1.1.
+- MQTT 5 is the primary protocol target (owner ruling: follow the specifications, latest
+  version first), shipped in the first broker phase alongside 3.1.1 through the
+  version-neutral internal event model (`session.rs` sees `Connect`/`Publish`/`Subscribe`/...
+  events; `proto/v5.rs` and `proto/v3.rs` adapt). v5 is the design center: reason codes make
+  the bridge honest (section 5) and its negotiation surfaces (Maximum QoS, Receive Maximum,
+  Server Keep Alive) say on the wire what 3.1.1 can only document. 3.1.1 ships beside it, not
+  after it, because Zephyr 4.4.1's client defaults to 3.1.1 and marks 5.0 EXPERIMENTAL
+  (checked), so the first-party device connector speaks 3.1.1 for now.
 - QoS 0 and 1 native, chosen per publish by the device. QoS 0 telemetry rides the session's
   already-open device WS as a `telemetry` frame when the socket is up, falling back to the
   POST when it is not (the evaluation and numbers are in ADR C and section 9); QoS 1
   telemetry, shadow reports and log chunks always go over the POST, because a PUBACK needs an
   HTTP status behind it. The bridge honors whatever QoS the packet carries; the ack table
   (section 5) is the QoS 1 contract.
-- QoS 2: a v3.1.1 PUBLISH is accepted with the full PUBREC/PUBREL/PUBCOMP exchange but at-
-  least-once upstream semantics (forwarded at PUBLISH, no dedup store, since the dedup store
-  would be exactly the bridge-held state ADR G forbids); a v5 CONNACK advertises Maximum
-  QoS = 1 and a QoS 2 PUBLISH is then a protocol error (DISCONNECT 0x9B). SUBSCRIBE at QoS 2
-  is granted at QoS 1.
+- QoS 2: not offered, spec-faithfully on both versions (owner ruling: follow the
+  specifications, no pretending). v5 has the mechanism for exactly this: CONNACK advertises
+  Maximum QoS 1, and a QoS 2 PUBLISH after that is the protocol error the spec makes it
+  (DISCONNECT 0x9B). 3.1.1 has no Maximum QoS advertisement, so the choice is true
+  exactly-once or refusal; true QoS 2 across a reconnect requires a per-client dedup store
+  that survives the connection, exactly the durable bridge state ADR G forbids (and the
+  bridge answers `session_present=0`, so there is no stored session for the spec's redelivery
+  to resume into), while delivering QoS 2 as at-least-once would silently break the contract
+  the client asked for. So a 3.1.1 QoS 2 PUBLISH is refused by closing the network
+  connection, 3.1.1's sanctioned response to a message the server does not accept; the bridge
+  never sends PUBREC, so it never enters a QoS 2 exchange it cannot honor. SUBSCRIBE at QoS 2
+  is granted at QoS 1 (legal in both versions). The first-party connector never sends QoS 2.
 - Retained: `pigeon/shadow/target` is retained server-side (the retained value is the
   pigeon's current shadow). The retain flag on inbound publishes is accepted and ignored.
-- Last Will: accepted only if its topic is one of the session's own publish topics (a will at
-  QoS 2 follows the QoS 2 rule); delivered on ungraceful disconnect by bridging it exactly
+- Last Will: accepted only if its topic is one of the session's own publish topics (the
+  will's declared QoS is irrelevant here: upstream delivery is one HTTP POST regardless, and
+  the QoS 2 refusal governs PUBLISH packets on the wire, which a will never is; a v5 CONNECT
+  whose Will QoS exceeds the advertised Maximum QoS is refused 0x9B per spec); delivered on
+  ungraceful disconnect by bridging it exactly
   like an ordinary publish from that session, using the bearer token the session already
   holds. No new dovecote route. Suppression rule: the will is NOT bridged if a newer live
   session for the same pigeon exists in the registry when the old one dies, because the
@@ -134,20 +147,23 @@ Decision:
   client id with CleanSession=0 is CONNACK 0x02 on 3.1.1; a message matching two accepted
   filters is delivered once.
 
-Performance: 3.1.1 is the smaller wire format at baseline (v5 adds at least a 1-byte property
-length to every packet), and with the short session-scoped topics of ADR C the v5 topic-alias
-saving is only a few bytes, so 3.1.1 is not just the compatibility default but the leaner one
-for this fleet; v5's value here is reason codes and negotiated Maximum QoS, not fewer bytes.
+Performance: v5's cost over 3.1.1 is one property-length byte per packet, and with the short
+session-scoped topics of ADR C its topic-alias saving is only a few bytes, so the two versions
+are within a byte or two of each other on this fleet's wire; the version choice is about
+correctness surfaces (reason codes, negotiated limits), not bytes, which is why the primary
+target can be v5 without a data-usage price.
 QoS 0 telemetry removes one packet and one round trip per report versus QoS 1, and on the air
 the difference is dominated by TLS record and TCP framing, not the 4-byte PUBACK: about
 110-160 bytes per report (section 9). A persistent session amortizes the TLS handshake to
 roughly one per device-connection rather than one per report, so at a 30 s cadence the
 handshake cost is negligible per day.
 
-Alternatives: reject QoS 2 outright (a client hardcoded to it is a support ticket and v3.1.1
-cannot say why); v5-only (breaks Zephyr); force QoS 1 on telemetry (loses the fire-and-forget
-path for no gain); drop LWT (users expect it); real persistent sessions (nothing to persist
-that the shadow does not already carry).
+Alternatives: QoS 2 as an at-least-once shim on 3.1.1 (friendlier to misconfigured clients
+but silently breaks the exactly-once contract; rejected by owner ruling as not spec-faithful);
+true QoS 2 (a durable per-client dedup store on the bridge, forbidden by ADR G); v5-only
+(breaks Zephyr); force QoS 1 on telemetry (loses the fire-and-forget path for no gain); drop
+LWT (users expect it); real persistent sessions (nothing to persist that the shadow does not
+already carry).
 
 ### ADR C: topic map and payloads
 
@@ -254,7 +270,11 @@ non-ingest routes (shadow GET) stay served while paused.
 Decision: one TLS listener on 8883, OpenSSL, TLS 1.2 minimum, with both a server certificate
 chain (Let's Encrypt for `mqtt.pidgeiot.com`) and the PSK ciphersuites loft uses
 (`PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES128-CBC-SHA256`); the ClientHello decides.
-No plaintext 1883, ever (the CONNECT password is the device token).
+No unencrypted traffic, ever, as an owner ruling and load-bearing: there is no plaintext 1883
+listener, no byte is accepted before the TLS handshake on any listener, and every deploy shape
+holds the rule, including the Docker example and the local dev loop (which is why
+`scripts/dev-cert.sh` exists: dev runs TLS too, never a cleartext shortcut). The CONNECT
+password is the device token, which this rule keeps off the wire in the clear.
 
 - Certificate session: CONNECT `username` = pigeon id, `password` = device bearer token,
   `client_id` = pigeon id or empty. This is the shape every off-the-shelf client supports
@@ -454,7 +474,7 @@ Line-by-line audit of ADRs A to D against this rule:
 | ADR | Already compliant | Where the line had to sit on the VPS, and why |
 |---|---|---|
 | A | First-party core holds no router/log/session store; `mqtt-proto` is a codec, not a broker. `rumqttd` fails this rule outright (it PUBACKs at its own commitlog). | The session state machine and keepalive timers: a Worker cannot hold the TCP/TLS socket. |
-| B | Stateless sessions (`session_present` always 0, v5 Session Expiry 0); retained = the DO's shadow; QoS 2 uses no dedup store; will is a deferred device-route publish. | QoS 1 ack timing: the PUBACK is issued only when the upstream POST completes, so its meaning is dovecote's answer, and nothing is buffered on the bridge. Two VPS-side semantic decisions live here and are named as policy: the ack table itself (HTTP status to MQTT outcome), and the will-suppression rule on takeover (only the VPS knows two sessions overlapped). |
+| B | Stateless sessions (`session_present` always 0, v5 Session Expiry 0); retained = the DO's shadow; QoS 2 refused rather than shimmed (no dedup store); will is a deferred device-route publish. | QoS 1 ack timing: the PUBACK is issued only when the upstream POST completes, so its meaning is dovecote's answer, and nothing is buffered on the bridge. Two VPS-side semantic decisions live here and are named as policy: the ack table itself (HTTP status to MQTT outcome), and the will-suppression rule on takeover (only the VPS knows two sessions overlapped). |
 | C | Session-scoped topics mean no id to authorize; the retained bytes are the DO's; the "last delivered target_version" marker is a per-connection duplicate suppressor, dies with the socket. | The device WS: a Worker cannot hold a socket to a VPS process, so the push (and the QoS 0 frame path) must ride a bridge-held live socket to the DO. It is connection state, not stored state. |
 | D | Auth is the device WS upgrade with the presented token: the DO decides, the bridge relays the verdict; PSK lookup is dovecote's route; rotation/deletion reach the bridge as the DO's own 4004/4005 closes. | Admission counters (global and per-source permits, CONNECT rates, per-identity failure budget, 30 s handshake deadline): these protect the VPS itself from floods and exist only there by nature. Two caches, both bounded and expiring (below). |
 
@@ -608,8 +628,11 @@ checked): `native_sim/native/64` in PSK mode against a local pigeonhole (dev loo
 driver), `esp32c6_devkitc/esp32c6/hpcore` in certificate mode over Wi-Fi (connection manager
 and PSA/TLS Kconfig copied from `wifi_init`; trust anchor ISRG Root X1, mbedTLS configured
 for the pinned ECDSA chain: P-256 + P-384, peer verification required, hostname set). The
-bench C6 currently serves CoAP testing; flashing it for MQTT is a scheduling item for the
-owner, not an assumption.
+bench C6 is confirmed free for this (its CoAP pigeon went quiet when the CID verification
+work wound down) and the plan uses it, no second unit and no reserved window; one
+coordination note: loft's Phase 6 CID cleanup may want a final CoAP regression pass on that
+board first, so the MQTT flash coordinates with it, and reflashing back to the CoAP sample is
+routine either way.
 
 ## 7. Test strategy
 
@@ -620,8 +643,9 @@ owner, not an assumption.
   endpoint that emits `shadow_update` and can send 4004/4005/4009 and drop pongs); the raw
   client drives: auth matrix (cert good/bad, PSK good/stale/unknown, identity disagreement,
   malformed identity refused locally), topic rule (unknown publish topic, bad subscribe
-  filter), QoS 0/1/2 semantics and the ack table per upstream status (including the
-  edge-shaped 403 classified as 5xx), the QoS 0 WS frame path and its POST fallback, PINGREQ
+  filter), QoS 0/1 semantics, the QoS 2 refusals (3.1.1 close on a QoS 2 PUBLISH; v5
+  Maximum QoS 1 advertised then DISCONNECT 0x9B, Will QoS over maximum refused 0x9B), the
+  ack table per upstream status (including the edge-shaped 403 classified as 5xx), the QoS 0 WS frame path and its POST fallback, PINGREQ
   answered while a publish is stalled upstream, the in-flight cap as protocol, oversize
   packet, rate caps, per-identity failure budget, takeover with will suppression, will
   delivery when genuinely alone, retained delivery on subscribe, push on `shadow_update`
@@ -653,9 +677,10 @@ Phase 1, the bridge (this repo):
   device WS connections from one address against `dovecote-staging` (existing pigeons) and
   holds them; find any per-source ceiling. Accept: the measured number in `docs/`, and the
   push design revisited if it is under the session ceiling.
-- T4 broker v3.1.1: config, tls, psk, quota, auth, session, proto/v3, bridge, shadow,
-  upstream; integration harness with mock dovecote. Accept: the section 7 integration list
-  green; `openssl s_client` all three handshake checks.
+- T4 broker, both protocol versions with v5 the design center: config, tls, psk, quota,
+  auth, session, proto/v5, proto/v3, bridge, shadow, upstream; integration harness with mock
+  dovecote covering the v5 and 3.1.1 matrices. Accept: the section 7 integration list green
+  on both versions; `openssl s_client` all three handshake checks.
 - T5 `pigeonhole-client` typed layer + `examples/subscribe-and-publish.rs` (env/CLI
   configured, cert or PSK, subscribe to `pigeon/shadow/target`, publish telemetry, print what
   arrives). Accept: the example runs against the T4 harness broker; used by the harness happy
@@ -693,13 +718,12 @@ Phase 3, device side:
   broker + mock dovecote. Accept: e2e script green; C6 hardware run is gated on bench
   scheduling.
 
-Phase 4, MQTT 5 and production:
-- T12 `proto/v5` + ack reason codes + CONNACK properties; harness v5 matrix. Accept: green.
-- T13 soak: 1000+ sessions with feeds against staging, steady-state memory per session
+Phase 4, production:
+- T12 soak: 1000+ sessions with feeds against staging, steady-state memory per session
   measured, `MemoryMax` set from it. Accept: numbers in the runbook.
-- T14 production bring-up: DNS (+AAAA with the v6 allowlist entry), cert, unit, firewall,
+- T13 production bring-up: DNS (+AAAA with the v6 allowlist entry), cert, unit, firewall,
   prod dovecote `MQTT_DEVICE_HOST`, prod fancier. Gated entirely. Accept: one prod pigeon
-  round-trips with `mosquitto_pub`/`_sub`.
+  round-trips with `mosquitto_pub`/`_sub` (a v5 client) and the 3.1.1 device sample.
 
 ## 9. Performance and cost model
 
@@ -765,7 +789,7 @@ session. The flood worst case is bounded by the in-flight BYTE cap (64 KiB of qu
 per session, ADR B), not just the packet count: 16 x 20 KiB per session would have been
 1.28 GiB fleet-wide, past the cap, while 4096 x (64 KiB in-flight + 64 KiB buffers) is
 ~512 MiB, inside `MemoryMax=1G` with room for the idle majority. The unit ships with
-`MemoryMax=1G`; T13's measurement replaces the targets with real figures.
+`MemoryMax=1G`; T12's measurement replaces the targets with real figures.
 
 "Unreasonable cost", so the owner can judge the line: an MQTT device costing materially more
 on the edge than an HTTPS/CoAP device for the same telemetry (the design holds them equal or
@@ -777,4 +801,4 @@ per-report handshake (avoided: the persistent session).
 
 Measured before the broker is built or shipped: the per-source ceiling on concurrent WS
 connections to the edge (T3, before T4, because the push design depends on the answer) and
-steady-state per-session memory (T13, sets `MemoryMax`).
+steady-state per-session memory (T12, sets `MemoryMax`).
