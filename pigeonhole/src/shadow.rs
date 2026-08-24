@@ -26,8 +26,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::upstream::{DeviceSocket, UpgradeFailure, Upstream};
 
-/// Inbound silence before the bridge pings.
-const PING_AFTER_SILENCE: Duration = Duration::from_secs(60);
+/// Inbound silence before the bridge pings, in seconds.
+const PING_AFTER_SILENCE_SECS: u64 = 60;
 /// Missed pongs before the socket counts as half-open.
 const MISSED_PONGS_BEFORE_RECONNECT: u32 = 2;
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -268,7 +268,7 @@ async fn serve(
   let mut missed_pongs = 0u32;
 
   loop {
-    let silence = tokio::time::sleep(PING_AFTER_SILENCE);
+    let silence = tokio::time::sleep(ping_after_silence());
     tokio::pin!(silence);
 
     tokio::select! {
@@ -400,6 +400,20 @@ fn telemetry_frame(metrics: &[u8]) -> String {
 pub fn is_object_shaped(payload: &[u8]) -> bool {
   let trimmed = payload.trim_ascii();
   trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}')
+}
+
+/// Inbound silence before the bridge pings. Read from the environment
+/// because a fleet on a link that goes half-open often may want to find a
+/// dead socket sooner than a minute, and because the default is far too long
+/// to exercise. Read per use rather than cached: it happens once per minute
+/// per session at most.
+fn ping_after_silence() -> Duration {
+  let secs = std::env::var("PIGEONHOLE_FEED_PING_SECS")
+    .ok()
+    .and_then(|value| value.parse::<u64>().ok())
+    .filter(|secs| *secs > 0)
+    .unwrap_or(PING_AFTER_SILENCE_SECS);
+  Duration::from_secs(secs)
 }
 
 fn backoff(attempt: u32) -> Duration {

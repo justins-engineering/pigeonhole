@@ -87,8 +87,10 @@ impl Verdict {
       Verdict::Accepted => Some(AckOutcome::Success),
       Verdict::PermanentlyRejected(outcome) => Some(outcome),
       Verdict::FusePaused => Some(AckOutcome::QuotaExceeded),
-      Verdict::CredentialRevoked => Some(AckOutcome::NotAuthorized),
-      Verdict::Retryable => None,
+      // No ack: the session is ending, and the reason travels as the
+      // DISCONNECT rather than as an acknowledgement of a publish that was
+      // not accepted.
+      Verdict::CredentialRevoked | Verdict::Retryable => None,
     }
   }
 }
@@ -210,6 +212,11 @@ mod tests {
     for status in [401, 403] {
       let verdict = Verdict::classify(status, PLAIN);
       assert_eq!(verdict, Verdict::CredentialRevoked);
+      assert_eq!(
+        verdict.ack(),
+        None,
+        "the reason travels as the disconnect, not as an ack"
+      );
       assert_eq!(
         verdict.ends_session(true),
         Some(DisconnectReason::NotAuthorized)
