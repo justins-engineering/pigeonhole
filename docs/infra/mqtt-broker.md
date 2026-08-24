@@ -115,6 +115,12 @@ mkdir -p tls && cp /path/to/chain.pem tls/ && cp /path/to/key.pem tls/
 docker compose up --build
 ```
 
+The container runs as an unprivileged user, so the chain and key have to be
+readable by it: `chmod 644` on the two files and `755` on the directory that
+holds them. `scripts/dev-cert.sh`'s output is deliberately 700, so pointing
+the container straight at it fails with "not a readable file" rather than
+starting on a chain it cannot serve.
+
 The image checks at build time that its OpenSSL lists the PSK suites the
 broker is configured for. Worth knowing what that proves: the suites are in
 the library's cipher table, not that a handshake will negotiate one. See the
