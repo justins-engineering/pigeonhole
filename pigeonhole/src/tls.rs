@@ -4,12 +4,23 @@
 //!
 //! Load-bearing details, each one a device behaviour rather than a
 //! preference. PSK suites are listed first with server preference set, so a
-//! device offering both PSK and ECDHE lands on PSK rather than on a chain it
-//! has no room to verify. The maximum send fragment is dropped to 4096 bytes
-//! so small-buffer mbedTLS builds can read the chain and a large retained
-//! shadow; the `openssl` crate has no binding for that, so it is one raw
-//! `SSL_CTX_ctrl` call. `SSL_MODE_RELEASE_BUFFERS` returns idle buffers,
-//! which matters at a ceiling of thousands of mostly idle sessions.
+//! TLS 1.2 client offering both PSK and ECDHE lands on PSK rather than on a
+//! chain it has no room to verify. The maximum send fragment is dropped to
+//! 4096 bytes so small-buffer mbedTLS builds can read the chain and a large
+//! retained shadow; the `openssl` crate has no binding for that, so it is
+//! one raw `SSL_CTX_ctrl` call. `SSL_MODE_RELEASE_BUFFERS` returns idle
+//! buffers, which matters at a ceiling of thousands of mostly idle sessions.
+//!
+//! Two things the handshake checks settled, both worth stating because they
+//! were assumed the other way. A TLS 1.3 capable client always lands on TLS
+//! 1.3 and the certificate, whatever its 1.2 cipher list says, because
+//! version negotiation happens before ciphersuite selection: the server
+//! preference above decides between PSK and ECDHE only among TLS 1.2
+//! clients, which is what the constrained devices are. And OpenSSL does not
+//! route a TLS 1.3 external PSK through the 1.2 callback below, so no
+//! session reaches this code by that path; a 1.3 client offering a PSK gets
+//! an ordinary certificate handshake and, presenting no CONNECT password,
+//! is refused there. Both are checked in `docs/infra/mqtt-broker.md`.
 //!
 //! A PSK handshake stashes (identity, bearer token) in the connection's
 //! ex_data for `auth` to pick up. The callback is synchronous and may miss
@@ -65,8 +76,9 @@ pub fn build_listener_context(
   builder.check_private_key()?;
 
   // PSK suites first, and server preference set so that order is the one
-  // that decides. Without the preference flag the client's order wins, and a
-  // dual-capable device would land on a certificate suite.
+  // that decides among TLS 1.2 clients. Without the preference flag the
+  // client's order wins, and a dual-capable device would land on a
+  // certificate suite it may have no room to verify.
   builder.set_cipher_list(&format!("{PSK_CIPHER_LIST}:DEFAULT"))?;
   builder.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
 
@@ -105,9 +117,11 @@ fn psk_callback(
   identity: Option<&[u8]>,
   psk_out: &mut [u8],
 ) -> Result<usize, ErrorStack> {
-  // Returning Ok(0) aborts the handshake with no distinguishable "unknown
-  // identity" signal to the peer: deliberate, so a probe learns nothing
-  // beyond "handshake failed".
+  // Returning Ok(0) aborts the handshake. OpenSSL answers an unknown
+  // identity with alert 115 and a wrong key with a bad-record-mac alert, so
+  // a prober can tell the two apart; that is OpenSSL's behaviour rather than
+  // a choice available here, and it costs nothing, because a pigeon id is a
+  // 256-bit Durable Object id and there is nothing to enumerate.
   let Some(identity) = identity else {
     return Ok(0);
   };

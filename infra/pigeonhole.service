@@ -1,0 +1,139 @@
+# MQTT broker (pigeonhole) -- production systemd unit. Install to
+# /etc/systemd/system/pigeonhole.service. Full deployment procedure,
+# including how the binary at /usr/local/bin/pigeonhole gets there and how
+# the credential files below get provisioned: docs/infra/mqtt-broker.md.
+#
+# The Docker path (infra/docker-compose.yml) is documentation-grade, for
+# developers self-hosting the bridge, not a fallback for this one. A bare
+# binary under systemd and a container have different attack surfaces and
+# are hardened on their own terms.
+
+[Unit]
+Description=PidgeIoT MQTT broker (TLS, certificate and PSK, port 8883)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# pigeonhole has no sd_notify integration: it is a process that binds a
+# listener, not a fork-and-signal-readiness daemon, so Type=notify would sit
+# waiting for a readiness message that never arrives. Type=exec says exactly
+# what the process guarantees, that the execve succeeded.
+Type=exec
+ExecStart=/usr/local/bin/pigeonhole
+
+# The broker refuses to start without a servable certificate and key, which
+# is a configuration error a restart will not fix; every other exit is worth
+# retrying.
+Restart=on-failure
+RestartSec=5s
+
+# Non-secret config, mirroring docker-compose.yml's environment block so the
+# two deployment shapes read identically. These match the built-in defaults
+# (src/config.rs), stated here so a future default change in code cannot
+# silently change production without a deliberate edit to this file.
+Environment=PIGEONHOLE_DOVECOTE_URL=https://api.pidgeiot.com
+Environment=PIGEONHOLE_LISTEN=[::]:8883
+Environment=PIGEONHOLE_LOG=info
+# The certificate and key are handed over as credentials, so these paths
+# point into the per-unit credential store rather than at the filesystem.
+Environment=PIGEONHOLE_TLS_CERT=%d/tls-chain
+Environment=PIGEONHOLE_TLS_KEY=%d/tls-key
+
+# None of these three ever goes in this file (unit files under
+# /etc/systemd/system are world-readable) or in the process environment.
+# LoadCredential= hands each to pigeonhole as a file under
+# $CREDENTIALS_DIRECTORY, readable only by the credential store systemd sets
+# up for this unit's own dynamic user.
+#
+# Source files, created out of band before first start:
+#   install -m 0400 -o root -g root /dev/stdin /etc/pigeonhole/service-secret
+# containing the same value as dovecote's COAP_SERVICE_SECRET Worker secret;
+# and certbot's fullchain.pem and privkey.pem for mqtt.pidgeiot.com. Root
+# only is correct: systemd (PID 1, running as root) reads the source files
+# itself and re-exposes them into the per-unit store, which is where the
+# broker's own unprivileged dynamic uid reads from.
+LoadCredential=PIGEONHOLE_SERVICE_SECRET:/etc/pigeonhole/service-secret
+LoadCredential=tls-chain:/etc/letsencrypt/live/mqtt.pidgeiot.com/fullchain.pem
+LoadCredential=tls-key:/etc/letsencrypt/live/mqtt.pidgeiot.com/privkey.pem
+
+SyslogIdentifier=pigeonhole
+
+# Above the session drain budget (15 s of in-flight publishes) plus the
+# server's own wait for sessions to finish (20 s), so systemd never kills
+# the process mid-drain and turns a deploy or a certificate renewal into a
+# loss event rather than a small redelivery window.
+TimeoutStopSec=45s
+
+# --- Hardening -----------------------------------------------------------
+# The broker's whole job is: bind TCP 8883, make outbound HTTPS and WSS to
+# dovecote, read three credentials, hold no other state and write no files.
+# Every directive below is chosen against that shape.
+
+# Ephemeral, unprivileged uid and gid allocated for this unit alone. The
+# broker never runs as a real system user and there is no shared uid to leak
+# into or out of.
+DynamicUser=yes
+
+# Whole filesystem read-only except the credential store systemd manages.
+# Safe with no ReadWritePaths= exceptions because the bridge is stateless by
+# design: it writes nothing, anywhere, and a component that grew a durable
+# store would be reopening ADR G rather than editing this line.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# /dev reduced to the minimal set. OpenSSL's RNG and rustls's ride the
+# kernel entropy paths this still permits; nothing here touches a real
+# device node.
+PrivateDevices=yes
+
+NoNewPrivileges=yes
+
+# 8883 needs no capability on a host with
+# net.ipv4.ip_unprivileged_port_start below it, and nothing else the broker
+# does needs one either.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Inbound from devices and outbound to dovecote are ordinary IPv4 and IPv6
+# sockets. AF_UNIX is here for name resolution rather than for anything the
+# broker opens itself: this host's nsswitch reaches systemd-resolved over an
+# AF_UNIX socket. Without it every lookup would pay a guaranteed-failing
+# syscall first and rest on an nsswitch fallback that a future edit could
+# remove. Everything genuinely unnecessary stays blocked.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+# systemd's standard allowlist for ordinary network services: the socket,
+# epoll, thread and file-descriptor calls a tokio process needs, without
+# enumerating them by hand, while still excluding classes like module
+# loading and mount.
+SystemCallFilter=@system-service
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+
+# No JIT, no runtime codegen, no dlopen'd OpenSSL engines. The crypto
+# inventory is the system libssl (the listener, both handshakes) and rustls
+# in-binary (the outbound legs). Ordinary ELF loading maps .text executable
+# but not writable, which this does not touch; it blocks only a mapping that
+# is both at once. First thing to check if the service dies immediately with
+# SIGSYS: journalctl naming this directive.
+MemoryDenyWriteExecute=yes
+
+# A backstop, not a capacity plan. The design's budget is the connection
+# ceiling (4096) times the per-session in-flight byte cap (64 KiB) plus
+# tuned socket buffers, about 512 MiB at a flood worst case, with the idle
+# majority far below that. If the broker leaks or is driven past this, the
+# cgroup OOM killer takes down only its own process tree and Restart brings
+# it back, rather than the box-wide killer picking among the other services
+# on this host. Replace with a measured figure after the soak.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

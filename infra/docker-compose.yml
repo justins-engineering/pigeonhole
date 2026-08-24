@@ -1,0 +1,33 @@
+# pigeonhole -- self-hosting example. Documentation-grade: it exists so a
+# developer running their own bridge has a working starting point, and it
+# reads the same environment the production systemd unit does.
+#
+#   cp pigeonhole.env.example pigeonhole.env   # then fill in the secret
+#   docker compose up --build
+#
+# TLS is not optional here either. Point the two paths below at a real chain
+# and key, or at scripts/dev-cert.sh's output for a local loop. There is no
+# cleartext listener to fall back to.
+services:
+  pigeonhole:
+    build:
+      context: ..
+      dockerfile: pigeonhole/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8883:8883/tcp"
+    environment:
+      # Where dovecote is. A self-hosted platform points this at its own
+      # Worker; a local loop points it at wrangler dev on the host.
+      PIGEONHOLE_DOVECOTE_URL: https://api.pidgeiot.com
+      PIGEONHOLE_LISTEN: "[::]:8883"
+      PIGEONHOLE_TLS_CERT: /tls/chain.pem
+      PIGEONHOLE_TLS_KEY: /tls/key.pem
+      PIGEONHOLE_LOG: info
+    volumes:
+      # Read-only: the broker reads the chain at startup and writes nothing.
+      - ./tls:/tls:ro
+    # PIGEONHOLE_SERVICE_SECRET lives in the gitignored pigeonhole.env,
+    # never here.
+    env_file:
+      - pigeonhole.env
