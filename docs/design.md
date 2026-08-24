@@ -117,10 +117,13 @@ Decision:
   reader never pauses (below) and the 10 s upstream publish timeout sits far below any 1.5x
   deadline, so a slow upstream can never masquerade as client silence.
 - Flow control: the reader never stops reading. In-flight QoS 1 publishes are counted and
-  capped as protocol: 16 (Receive Maximum on v5; over it, DISCONNECT 0x93) with a v3.1.1
-  grace ceiling of 64 before close. PINGREQ, PUBACK and DISCONNECT keep flowing while the
-  bridge waits on upstream; publishes are bridged one at a time in arrival order, so ordering
-  holds and a slow upstream bounds memory at the cap, not by stalling the socket.
+  capped as protocol, by count and by bytes: 16 packets (Receive Maximum on v5; over it,
+  DISCONNECT 0x93; v3.1.1 grace ceiling 64) and 64 KiB of queued payload, whichever first.
+  PINGREQ, PUBACK and DISCONNECT keep flowing while the bridge waits on upstream. Ordering is
+  guaranteed within a QoS class, not across classes: QoS 1 publishes are bridged one at a
+  time in arrival order, while QoS 0 frames bypass that queue onto the WS (a stalled POST
+  must not delay the fast path), so a QoS 0 frame can overtake an earlier QoS 1 publish,
+  which fits their semantics.
 - Limits: inbound packet remaining-length cap 20 KiB (payload cap 16 KiB, mirroring
   `capsules::MAX_LOG_CHUNK_BYTES` and the WS frame cap; topic/properties headroom); topic
   name <= 256 bytes; client id / username <= 128; password <= 256 (token is 92 chars);
@@ -182,26 +185,33 @@ would re-push on the device's own reports).
 Feed rules, each a review finding closed:
 - Liveness: the DO never pings (checked: `WsOutboundFrame::Ping` is dead code), so the bridge
   owns it, exactly as the device WS client does: a protocol-level WebSocket ping each 60 s of
-  feed silence, two missed pongs marks the socket half-open and reconnects. Whether the edge
-  answers protocol pings without waking the DO is checked at implementation; if not, the JSON
-  `{"type":"ping"}` frame is the fallback and its cost is in section 9. A session with QoS 0
-  telemetry flowing needs no pings (its frames prove the socket).
+  INBOUND silence (no pong, no `shadow_update`, no `shell_cmd` received), two missed pongs
+  marks the socket half-open and reconnects. Inbound, never outbound: a half-open TCP path
+  absorbs outbound writes into the send buffer for minutes, and telemetry frames get no
+  response, so outbound activity proves nothing and must not reset the timer. Whether the
+  edge answers protocol pings without waking the DO is checked at implementation; if not, the
+  JSON `{"type":"ping"}` frame is the fallback and its cost is in section 9.
 - Reconnect: exponential backoff 1 s to 60 s with jitter while the session lives; while the
   socket is down, QoS 0 telemetry falls back to the POST and pushes are caught up by the
   snapshot on reconnect.
 - Close code 4009 ("replaced by new connection", checked) is terminal for this session's feed:
   something else holds the pigeon's socket, and redialing would close it back, a fight with no
   winner. The feed re-arms only on a new MQTT session; QoS 0 telemetry stays on the POST; a
-  warn line names the pigeon.
+  warn line names the pigeon, suppressed when the closer is the bridge's own newer session
+  for the same pigeon (the ordinary takeover, which would otherwise warn on every legitimate
+  device reconnect).
 - Close codes 4004 ("token revoked") and 4005 ("pigeon deleted"), which dovecote now sends
   from `token/refresh` and `delete` (shipped, in `docs/api.md`), end the MQTT session itself:
   the bridge sends v5 DISCONNECT 0x87 (4004) or 0x87 with a "deleted" reason string (4005),
-  closes, and never redials with the dead token.
+  closes, never redials with the dead token, and skips the session's will (it would only be a
+  guaranteed 401 at the DO).
 - Close code 4029 (billable frame while the account is paused; shipped with the WS fuse) marks
   the feed fuse-paused: no hot redial (the upgrade would answer 429), retry at a fuse-scale
-  backoff (minutes). A v5 session survives it, its QoS 1 publishes earning PUBACK 0x97 and QoS
-  0 telemetry falling to the POST where the same fuse answers; a v3.1.1 session is closed, its
-  only signal (section 5).
+  backoff (minutes). A v5 session survives it, its QoS 1 publishes earning PUBACK 0x97; QoS 0
+  telemetry is then dropped at the bridge for the same fuse-scale window (a bounded, expiring
+  per-session pause flag, ADR G-compatible) rather than POSTed into a guaranteed 429, one
+  Worker plus one DO request apiece for the rest of the billing period. A v3.1.1 session is
+  closed, its only signal (section 5).
 
 Alternatives: opening the WS lazily on first subscribe (the earlier revision; dropped because
 auth then needs a separate shadow GET, QoS 0 telemetry loses its cheap path, and a stale
@@ -225,7 +235,7 @@ dashboard gets an honest error instead of a 10 s 504. Mapping shell onto
 
 QoS 0 telemetry over the held WS, the trade evaluated (numbers in section 9): the frame path
 costs one DO message billed 20:1 and no Worker request, no verify round trip, no per-report
-fuse query, about $0.05 per device-month less than the POST path and one edge hop lower
+fuse query, about $0.04 per device-month less than the POST path and one edge hop lower
 latency, with in-order synchronous upserts (the queued POST path is only best-effort ordered).
 It is thin-bridge clean: the frame is exactly what a WS device sends. The one cost that
 remained, free-tier fuse parity on the WS path, was closed platform-side while this design was
@@ -233,7 +243,11 @@ in review: the fuse now covers WS frames (`WsInboundFrame::is_billable` inside t
 `docs/api.md`), refusing the upgrade with 429 on a paused account and closing an open socket
 with 4029 on a billable frame while paused. The bridge's publish rate cap sits under the DO's
 WS frame limit (40 versus 50 per 10 s). Decision: adopted, unconditionally; the POST remains
-the fallback whenever the socket is down.
+the fallback whenever the socket is down. One consequence of the shipped fuse shape, stated
+rather than left implicit: because the WS upgrade is both the session's auth and refused 429
+while paused, a paused free-tier MQTT device cannot connect at all and so loses config
+delivery too, parity with WS devices but strictly less than HTTPS/CoAP devices, whose
+non-ingest routes (shadow GET) stay served while paused.
 
 ### ADR D: auth and transport security
 
@@ -259,8 +273,9 @@ No plaintext 1883, ever (the CONNECT password is the device token).
 - CONNACK mapping, retryable kept apart from permanent: 401 is 0x04 (v5 0x86); 403 with the
   API's plain-text body is 0x05 (0x87); a 403 with an HTML body or edge-mitigation headers is
   edge security, not auth, and maps with 5xx to 0x03 (0x88), named in the stats line so a WAF
-  event does not read as a fleet credential failure; 400 (malformed id, pre-filtered) is 0x02
-  (0x85). A 429 on the upgrade is a paused free-tier account (the shipped WS fuse), CONNACK
+  event does not read as a fleet credential failure; a malformed identity (pre-filtered
+  locally) refuses as 0x04/0x86 when it arrived as the username and 0x02/0x85 when only the
+  client id carried it. A 429 on the upgrade is a paused free-tier account (the shipped WS fuse), CONNACK
   0x97 on v5 and 0x03 on v3.1.1: valid credentials, come back later. A deleted pigeon's DO
   currently answers 500 on device routes (checked: `one_row` on an empty table); the backend
   phase makes that a 401 so deletion reads as permanent.
@@ -275,23 +290,32 @@ No plaintext 1883, ever (the CONNECT password is the device token).
   the device WS's 4009 rule; the superseded session's will is suppressed (ADR B).
 - Admission: loft's `quota.rs` (4096 global, 256 per source bucket, IPv6 per /64), loft's
   30 s wall-clock handshake deadline, 10 s CONNECT deadline after it, 30 CONNECTs per source
-  per 10 s plus a global CONNECT ceiling (120 per 10 s), a 10 s negative cache keyed by
-  (identity, sha256(password)), and a per-identity failure budget (10 refusals in 60 s parks
-  that pigeon id locally for the rest of the window, any password), so neither a
-  distinct-password flood nor a distributed one becomes a dovecote request flood or a DO wake
-  storm on one pigeon.
+  per 10 s, a 10 s negative cache keyed by (identity, sha256(password)), a per-identity
+  failure budget (10 refusals in 60 s parks that pigeon id locally for the rest of the
+  window, any password), and a global brake that counts REFUSED connects only (120 refusals
+  per 10 s stops admitting new pre-auth connections for the rest of the window). Scoping the
+  global brake to refusals is deliberate: a ceiling on all CONNECTs sized for floods (120 per
+  10 s) would turn the post-drain fleet reconnect into 4096/120 x 10 s, nearly six minutes of
+  spurious refusals stretched further by client backoff, while successful reconnects are
+  already bounded by the 4096-permit table and per-source caps and cost dovecote one upgrade
+  each. A credential flood still hits the per-source, per-identity and global-refusal brakes.
 - DNS: `mqtt.pidgeiot.com` is DNS-only (Cloudflare cannot proxy MQTT without Spectrum), so the
   VPS address is exposed exactly as loft's 5684 already is; firewall is an `INPUT` accept on
   8883/tcp next to loft's rules. The listener binds dual-stack (`[::]:8883`); AAAA is
   published only together with adding the VPS's v6 egress address to
   `COAP_SERVICE_ALLOWED_IPS`, or PSK resolution (loft's too) starts failing over v6.
   Certificate: certbot DNS-01 with a scoped Cloudflare API token (no inbound port 80),
-  `--key-type ecdsa` pinned (E5/E6 chain to ISRG Root X2 cross-signed by X1, the smaller
-  chain; the device verifies with P-256 + P-384 enabled and the X1 anchor); renewal restarts
+  `--key-type ecdsa` with `--preferred-chain "ISRG Root X2"` pinned together: the served
+  chain is then leaf (P-256) to E5/E6 (P-384) anchored at ISRG Root X2, all-ECDSA, and the
+  device provisions X2 as its trust anchor with only P-256 + P-384 verification. (The default
+  ECDSA chain instead ends in X2 cross-signed BY X1, an RSA-4096 signature, which would force
+  RSA verification into every constrained build; anchoring X2 removes it.) Renewal restarts
   the unit (fleet reconnects with backoff, drained per ADR E).
-- Listener TLS details a real device will hit (each checked against the trees):
-  `SSL_CTX_set_max_send_fragment(4096)` so small-buffer mbedTLS builds (native_sim caps
-  content at 7168) can read the chain and any large retained shadow; PSK suites listed first
+- Listener TLS details a real device will hit (each checked against the trees): a 4096-byte
+  max send fragment so small-buffer mbedTLS builds (native_sim caps content at 7168) can read
+  the chain and any large retained shadow; the openssl crate has no binding for it (checked),
+  so it is one raw `SSL_CTX_ctrl` call (`SSL_CTRL_SET_MAX_SEND_FRAGMENT`, loft's FFI-shim
+  precedent applies); PSK suites listed first
   with server preference, so a device offering PSK and ECDHE suites lands on PSK rather than
   a chain it cannot verify; `SSL_MODE_RELEASE_BUFFERS` on. OpenSSL also consults the TLS 1.2
   PSK callback for a TLS 1.3 external PSK when no `psk_find_session` callback is set; still
@@ -514,7 +538,7 @@ will with its suppression rule, and a registry entry for takeover, over version-
 that `proto/v3` and `proto/v5` adapt; `bridge` owns the ack table (section 5), routes QoS 0
 telemetry to the WS frame path when the feed is up, and never parses payloads; `shadow` owns
 the device WS: dial at CONNECT, snapshot seed, `target_version` change detection, liveness
-pings on silence, backoff, and the 4009/4004/4005 rules; `upstream` is the reqwest client
+pings on inbound silence, backoff, and the 4009/4004/4005/4029 rules; `upstream` is the reqwest client
 (`pigeonhole/<version>` UA, 10 s publish timeout, 10 s connect) and the WSS dial with tuned
 buffers (read and write 4 KiB, max message 64 KiB) and the `Authorization` header.
 
@@ -720,10 +744,11 @@ invocation per POST; it is never cheaper, so it is priced once here and not agai
 | Queue operations | 259,200 (write, read, ack) -> $0.104 | same -> $0.104 | $0.40/M ops |
 | DO storage rows written | 86,400 (one merged row per report) -> $0.086 past allowance | same -> $0.086 | $1.00/M rows; reads negligible |
 | Feed liveness pings | none needed while frames flow | ~2,160 request-equivalents if JSON pings on a quiet feed -> under $0.001 | |
-| Total | ~$0.25 | ~$0.19 | |
+| Total | ~$0.25 | ~$0.21 | |
 
-The fast path saves ~$0.05 per device-month (~21 %) and one edge hop, and its synchronous
-upsert keeps rapid reports in order; that is the trade ADR C records, adopted (its one
+The fast path saves ~$0.04 per device-month (~16 %) and one edge hop, and its synchronous
+upsert keeps rapid reports in order (within the QoS 0 class; cross-class ordering is
+deliberately unspecified, ADR B); that is the trade ADR C records, adopted (its one
 condition, fuse parity on the WS path, shipped platform-side during review). Queue operations and storage rows dominate either path and are platform-wide
 (HTTPS, CoAP, WS, MQTT identical), so the load-bearing reading stands: an MQTT device costs
 the edge what any other device costs, and MQTT adds only the VPS. The included 50 M rows
@@ -736,9 +761,11 @@ buffers alone at the 4096-session ceiling, on a 4 GB box already carrying `Memor
 2G (kratos) and 1536M (loft). The upstream dial therefore sets read and write buffers to
 4 KiB and max message to 64 KiB (shadow frames are hundreds of bytes to a few KiB), the
 listener sets `SSL_MODE_RELEASE_BUFFERS`, and the budget target is tens of KiB idle per
-session with the worst case bounded by the in-flight cap (16 x 20 KiB) under authenticated
-flood only. 4096 x 64 KiB is ~256 MiB, so the unit ships with `MemoryMax=1G` and T13's
-measurement replaces the target with the real figure.
+session. The flood worst case is bounded by the in-flight BYTE cap (64 KiB of queued payload
+per session, ADR B), not just the packet count: 16 x 20 KiB per session would have been
+1.28 GiB fleet-wide, past the cap, while 4096 x (64 KiB in-flight + 64 KiB buffers) is
+~512 MiB, inside `MemoryMax=1G` with room for the idle majority. The unit ships with
+`MemoryMax=1G`; T13's measurement replaces the targets with real figures.
 
 "Unreasonable cost", so the owner can judge the line: an MQTT device costing materially more
 on the edge than an HTTPS/CoAP device for the same telemetry (the design holds them equal or

@@ -40,6 +40,13 @@ pub const PUBLISH_RATE_WINDOW_SECS: u64 = 10;
 pub const RECEIVE_MAXIMUM: u16 = 16;
 pub const RECEIVE_MAXIMUM_V3_GRACE: u16 = 64;
 
+/// Byte cap on queued in-flight QoS 1 payload per session, enforced
+/// alongside the packet-count caps above (whichever trips first): it is
+/// what bounds the bridge's flood worst case within the unit's memory
+/// budget, since counting packets alone would allow 16 full-size packets
+/// per session, past the box's cap fleet-wide.
+pub const MAX_INFLIGHT_BYTES: usize = 64 * 1024;
+
 /// Longest keepalive honored, in seconds; larger client values are clamped
 /// here, and a client keepalive of 0 gets this as its idle deadline.
 pub const MAX_KEEPALIVE_SECS: u16 = 30 * 60;

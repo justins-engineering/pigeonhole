@@ -44,3 +44,23 @@ Counts: 8 MAJOR accepted (0 rebutted), 13 MINOR accepted (0 rebutted), 8 NIT: 7 
 already fixed. The review's thin-bridge section asked for two VPS-side semantic decisions to be
 named in the audit table (the ack table as policy, the will-suppression rule) and for the
 Worker-side surface list to include the rotation close codes; all three are in ADR G.
+
+## Verify round (design-review-1-verify.md)
+
+| Finding | Disposition | What changed, where |
+|---|---|---|
+| V1 | Accepted | The feed-liveness timer keys on INBOUND silence only (no pong, no `shadow_update`, no `shell_cmd` received); the "frames prove the socket" sentence is gone, with the half-open send-buffer reason stated (ADR C feed rules, section 4, shadow stub). |
+| V2 | Accepted | The global brake now counts refused CONNECTs only (120 refusals per 10 s), with the arithmetic stated: an all-CONNECT ceiling at that size would stretch a post-drain fleet reconnect to nearly six minutes of spurious refusals, while successful reconnects are already bounded by the permit table and per-source caps (ADR D admission). |
+| V3 | Accepted | `--preferred-chain "ISRG Root X2"` pinned with `--key-type ecdsa`: all-ECDSA chain, device anchors X2 with P-256 + P-384 only; the cross-signed-by-X1 RSA trap is named (ADR D, section 6 sample config, open-questions item 7). |
+| V4 | Accepted | Stated consequence: a paused free-tier MQTT device cannot connect at all and loses config delivery, parity with WS devices, strictly less than HTTPS/CoAP whose non-ingest routes stay served (ADR C). |
+| V5 | Accepted | Ordering guaranteed within a QoS class only: QoS 0 frames bypass the sequential bridge queue (a stalled POST must not delay the fast path); cross-class overtaking stated as fitting the semantics (ADR B flow control, section 9, session stub). |
+| V6 | Accepted | On 429/4029 the bridge sets a bounded, expiring per-session pause flag and drops QoS 0 telemetry for a fuse-scale window instead of POSTing each report into a guaranteed 429 (ADR C 4029 rule). |
+| V7 | Accepted | The missing `SSL_CTX_set_max_send_fragment` binding is named: one raw `SSL_CTX_ctrl` call, loft FFI-shim precedent (ADR D, tls stub unchanged in intent). |
+| V8 | Accepted | The takeover 4009 warn is suppressed when the closer is the bridge's own newer session; the will is skipped after a 4004/4005 close instead of being bridged into a guaranteed 401 (ADR C feed rules). |
+| V9 | Accepted | In-flight is capped by bytes as well as count (`MAX_INFLIGHT_BYTES` 64 KiB per session): flood worst case ~512 MiB fleet-wide, inside `MemoryMax=1G`; the 1.28 GiB count-only figure is named as what the byte cap prevents (ADR B, section 9, limits). |
+| V10 | Accepted as a wording correction to this file | The R13 row's "no CONNECT-time GET copy at all" means no separately fetched auth-time copy exists; the bridge does buffer the latest feed bytes per session to serve a later SUBSCRIBE, bounded, per-connection, dying with the socket, as the design text says. |
+| V11 | Accepted | A malformed identity refuses as 0x04/0x86 when it arrived as the username, 0x02/0x85 when only the client id carried it (ADR D). |
+
+Also folded from the verify pass's section 2: the frame-path column's total corrected to
+~$0.21 per device-month, the saving to ~$0.04 (~16 %), in section 9 and ADR C; the POST
+column's ~$0.25 was confirmed and stands.

@@ -46,9 +46,12 @@ already made.
    scheduled window or a second C6; the design does not assume the board.
 
 7. **Certificate issuance and renewal.** certbot DNS-01 with a scoped Cloudflare API token on
-   the VPS (no inbound port 80), `--key-type ecdsa` pinned (the smaller chain; the device
-   samples are configured against it), key and chain via `LoadCredential=`, renewal restarts
-   the service through the SIGTERM drain (in-flight publishes acked, sessions closed with
-   "server shutting down", one fleet reconnect every ~60 days absorbed by client backoff).
-   The alternative is a SIGHUP hot reload with a stable service user. Recommend:
-   restart-on-renew for v1.
+   the VPS (no inbound port 80), `--key-type ecdsa` together with `--preferred-chain "ISRG
+   Root X2"`, so the served chain is all-ECDSA (leaf P-256, E5/E6 P-384) and the device
+   anchors ISRG Root X2 with only P-256 + P-384 verification enabled; without the
+   preferred-chain pin, the default ECDSA chain ends in X2 cross-signed by X1, whose RSA-4096
+   signature would force RSA verification into every constrained build. Key and chain via
+   `LoadCredential=`; renewal restarts the service through the SIGTERM drain (in-flight
+   publishes acked, sessions closed with "server shutting down", one fleet reconnect every
+   ~60 days absorbed by client backoff). The alternative is a SIGHUP hot reload with a stable
+   service user. Recommend: restart-on-renew for v1, with the X2-anchored all-ECDSA chain.
