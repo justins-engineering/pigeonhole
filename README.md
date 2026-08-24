@@ -30,9 +30,10 @@ What it handles:
   wire). No fan-out between clients; the durable state is the pigeon's Durable Object.
 - **Retained target shadow and push.** `pigeon/shadow/target` is delivered on subscribe and
   re-published whenever the dashboard changes the pigeon's configuration, fed by the pigeon's
-  own device WebSocket on the backend, which the bridge opens on the device's behalf while the
-  subscription lives. The retained value is always the Durable Object's own bytes, never
-  bridge-held state.
+  own device WebSocket on the backend, which the bridge opens at CONNECT on the device's
+  behalf: that upgrade is also the session's authentication, and QoS 0 telemetry rides the
+  same socket. The retained value is always the Durable Object's own bytes, never bridge-held
+  state.
 - **Admission control** in loft's style: global and per-source connection ceilings, handshake
   and CONNECT deadlines, per-session publish rate and packet size caps, a negative cache for
   bad credentials.
@@ -58,9 +59,9 @@ The backend today is `dovecote`, the PidgeIoT edge Worker, in a separate reposit
    carries the short PSK that keys the handshake plus the pigeon's bearer token; its shape is
    mirrored in `pigeonhole-wire`, which names the paired backend definition.
 
-Certificate sessions are authenticated by the first data-path call itself (`GET .../shadow`
-with the presented token), which also seeds the retained shadow, so no new backend route is
-needed for authentication.
+Certificate sessions are authenticated by the device WebSocket upgrade itself, made with the
+presented token: a 101 authenticates the session, opens its push feed, and delivers the
+current shadow in one round trip, so no new backend route is needed for authentication.
 
 ## Workspace
 

@@ -1,12 +1,17 @@
-//! The retained shadow feed for one session. Seeded by the CONNECT-time
-//! shadow GET; once the session subscribes, the broker opens the pigeon's
-//! device WebSocket with the session's bearer token and treats the snapshot
-//! frame and every `shadow_update` frame as a new retained value, lifting
-//! the `shadow` member out as a raw JSON slice so the bytes the device sees
-//! are the bytes dovecote sent. A retained PUBLISH goes out only when
-//! `(target_version, updated_at)` changed since the last delivery.
-//! Reconnects with 1 s to 60 s jittered backoff while the subscription
-//! lives; a 4009 close ("replaced by new connection") means another client
-//! holds this pigeon's socket, so the feed parks at the backoff ceiling and
-//! logs a warning instead of fighting. Closed with the session. Lands with
-//! the broker's implementation task.
+//! The device WebSocket, the session's spine: dialled at CONNECT (the
+//! upgrade is the session's authentication, ADR D), its snapshot-on-accept
+//! frame seeds the retained `pigeon/shadow/target` value, its
+//! `shadow_update` frames refresh it (the `shadow` member lifted as a raw
+//! JSON slice, never re-serialized), and QoS 0 telemetry rides it as
+//! `telemetry` frames. A retained PUBLISH is delivered only when
+//! `target_version` changed since the last delivery (`updated_at` bumps on
+//! device report-backs too, so it is not the change key). Liveness is the
+//! bridge's job, the DO never pings: a protocol-level WS ping per 60 s of
+//! feed silence, two missed pongs reconnects; flowing telemetry frames
+//! substitute. Reconnect backs off 1 s to 60 s with jitter; close code
+//! 4009 (socket held by someone else) is terminal for this session's feed;
+//! 4004 (token revoked) and 4005 (pigeon deleted), which dovecote sends on
+//! refresh and delete, end the MQTT session itself with no redial. An
+//! inbound `shell_cmd` frame is answered immediately with a `shell_output`
+//! saying shell is not available over MQTT. Lands with the broker's
+//! implementation task.

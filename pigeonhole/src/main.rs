@@ -4,9 +4,9 @@
 //! topic), and a bridge that turns each publish into the matching HTTP call
 //! on dovecote's device routes with the device's own bearer token, so every
 //! decision with meaning stays at the edge (ADR G, the thin-bridge rule).
-//! The only other upstream leg is the pigeon's device WebSocket, opened on
-//! the device's behalf while it subscribes to its shadow, to turn dashboard
-//! config pushes into retained publishes. Concurrency model: one tokio task
+//! The other upstream leg is the pigeon's device WebSocket, opened at
+//! CONNECT on the device's behalf: it is the session's authentication, the
+//! retained-shadow feed, and the QoS 0 telemetry fast path. Concurrency model: one tokio task
 //! per session on the multi-thread runtime (the PSK callback's cache-miss
 //! lookup uses `block_in_place`, which needs it). Configured entirely by
 //! environment variables, the same set whether run as the hardened systemd

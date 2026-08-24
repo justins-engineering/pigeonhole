@@ -25,14 +25,20 @@ pub const MAX_CLIENT_ID_BYTES: usize = 128;
 pub const MAX_PASSWORD_BYTES: usize = 256;
 
 /// Inbound PUBLISH rate ceiling per session: this many packets in any
-/// rolling window of `PUBLISH_RATE_WINDOW_SECS`.
-pub const PUBLISH_RATE_MAX: u32 = 60;
+/// rolling window of `PUBLISH_RATE_WINDOW_SECS`. Deliberately below the
+/// backend Durable Object's own WebSocket frame limit (50 per 10 s), so
+/// the QoS 0 telemetry fast path over that socket can never trip the DO's
+/// rate close.
+pub const PUBLISH_RATE_MAX: u32 = 40;
 pub const PUBLISH_RATE_WINDOW_SECS: u64 = 10;
 
-/// Unacknowledged inbound QoS 1 publishes the broker holds per session
-/// (advertised as Receive Maximum on MQTT 5); beyond it the broker stops
-/// reading the socket until the bridge drains.
+/// Unacknowledged inbound QoS 1 publishes the bridge holds per session,
+/// advertised as Receive Maximum on MQTT 5 and enforced as a protocol
+/// matter (never by pausing the socket, which would starve keepalive):
+/// over it a v5 session gets DISCONNECT 0x93, and a v3.1.1 session is
+/// closed only past `RECEIVE_MAXIMUM_V3_GRACE`.
 pub const RECEIVE_MAXIMUM: u16 = 16;
+pub const RECEIVE_MAXIMUM_V3_GRACE: u16 = 64;
 
 /// Longest keepalive honored, in seconds; larger client values are clamped
 /// here, and a client keepalive of 0 gets this as its idle deadline.

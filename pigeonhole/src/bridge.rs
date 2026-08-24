@@ -1,11 +1,13 @@
-//! Publish to HTTP translation, and the acknowledgement policy that makes a
-//! PUBACK mean something: one is sent only when dovecote answered. The
-//! three publish leaves map onto `POST /device/pigeons/:id/{telemetry,
-//! shadow,logs}` with the session's bearer token and the right
-//! `Content-Type`; payload bytes are copied, never parsed (dovecote
-//! validates and answers 400, the same as for a direct HTTPS device). The
-//! outcome table (`docs/design.md` section 5) turns each upstream status
-//! into ack, ack-and-log, or close-so-the-client-retries, with the v5
-//! reason codes alongside. Also bridges a session's will on ungraceful
-//! exit, since a will is just a deferred publish from that session. Lands
-//! with the broker's implementation task.
+//! Publish translation and the acknowledgement policy that makes a PUBACK
+//! mean something: telemetry acks mean "authenticated and durably queued"
+//! (the 202), shadow reports and logs mean "the DO write completed". QoS 0
+//! telemetry is routed as a `telemetry` frame on the session's device WS
+//! when the feed is up (and the fuse-parity flag is on), falling back to
+//! the POST; QoS 1 publishes always go over the POST with the session's
+//! bearer token and the right `Content-Type`, payload bytes copied, never
+//! parsed. The outcome table (design section 5) maps each upstream status
+//! to ack, ack-and-log, keep-session-with-reason (v5 429), or
+//! close-so-the-client-retries, and classifies an HTML-bodied 403 as edge
+//! security rather than auth. Also bridges a session's will on ungraceful
+//! exit, a deferred publish from that session, unless a newer session for
+//! the pigeon exists. Lands with the broker's implementation task.
