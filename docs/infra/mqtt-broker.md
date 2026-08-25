@@ -93,29 +93,34 @@ Every step here is owner-gated.
    systemd-analyze security pigeonhole.service
    ```
 
-6. **Check that this host's OpenSSL can SELECT the constrained suites**, not
-   merely list them. A cipher list can contain a suite OpenSSL will never
-   choose: on the workstation this was developed on, `PSK-AES128-CCM8` lists
-   in `openssl ciphers`, is accepted by `set_cipher_list`, is ranked first
-   with server preference, and is still never selected. Against the running
-   broker:
+6. **Check which constrained suites this host's OpenSSL will SELECT**, not
+   merely list. A cipher list can contain a suite OpenSSL never chooses:
+   `openssl ciphers 'PSK-AES128-CCM8'` prints the suite identically at
+   security levels 0, 1 and 2, and only level 0 selects it. The broker runs
+   at the default level, so as shipped it does not serve
+   `PSK-AES128-CCM8`.
+
+   This is answerable before the broker is even installed, with a loopback
+   pair. **`s_server` exits the moment its stdin reaches EOF**, which it
+   does immediately when backgrounded, and the resulting
+   `unexpected eof while reading` reads exactly like a negotiation failure,
+   so hold stdin open:
 
    ```sh
-   # Offer CCM8 alone. Anything other than a CCM8 cipher line means this
-   # host cannot serve a device that offers only CCM8.
-   HEX=$(printf '<tls_psk_secret>' | xxd -p -c 200)
-   openssl s_client -connect <host>:8883 -tls1_2 \
-     -psk_identity <pigeon id> -psk "$HEX" \
-     -cipher 'PSK-AES128-CCM8:@SECLEVEL=0' -ciphersuites '' </dev/null \
-     | grep -E 'Cipher *:'
+   (sleep 10 | openssl s_server -accept 9032 -naccept 1 -psk 1a2b3c4d \
+      -nocert -tls1_2 -cipher 'PSK-AES128-CCM8:@SECLEVEL=0') &
+   openssl s_client -connect 127.0.0.1:9032 -psk 1a2b3c4d -tls1_2 \
+      -cipher 'PSK-AES128-CCM8:@SECLEVEL=0' </dev/null | grep '^New,'
    ```
 
-   If it fails, note that GCM and CBC are both selectable here and every
-   first-party build offers GCM alongside CCM, so a failure is a non-event
-   until something offers CCM8 alone. The one profile that could is the
-   nRF91 modem-offloaded path, whose suite list comes from modem firmware
-   and has not been measured. Record the result and raise it before a
-   cellular device is provisioned against this host.
+   A `Cipher is PSK-AES128-CCM8` line means this OpenSSL can serve CCM8 if
+   the broker's security level allows it. Then repeat the `s_client` half
+   against the live broker on 8883 to see what it actually offers.
+
+   As shipped the broker will answer GCM or CBC, both of which every
+   measured device build also offers. A peer offering CCM8 *alone* would be
+   refused; the only profile that might is the nRF91 modem-offloaded path,
+   whose suite list comes from modem firmware and has not been measured.
 
 7. **Renewal.** certbot's renew hook restarts the unit. That is cheap
    because the shutdown drains: in-flight publishes finish and are

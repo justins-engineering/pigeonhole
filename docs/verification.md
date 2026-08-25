@@ -101,85 +101,66 @@ comments now say what was measured:
   certificate handshake, presents no CONNECT password, and is refused there.
   No session reaches the PSK code by that path.
 
-**`PSK-AES128-CCM8` is still open, and the cause is now located.** Two
-wrong explanations were tried on the way, which is why this is written out
-in full rather than as a row.
+**`PSK-AES128-CCM8` is not served, and the cause is the security level.**
+This took three wrong explanations to reach, so the mechanism is written out
+with the measurement behind each step.
 
-The suite is first in the broker's cipher list, `set_cipher_list` accepts
-it, and `openssl ciphers` shows it. It is still never selected. Probing the
-running broker with an OpenSSL client on this host:
+The suite is first in the broker's cipher list and is never selected,
+because the broker runs at OpenSSL's **default security level**, which
+excludes CCM8 at *selection* time while leaving it in the parsed list.
+Measured, OpenSSL 3.6.3 on both ends:
 
-| Client offers | Negotiated |
-|---|---|
-| `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` |
-| `PSK-AES128-CCM8` only | nothing: handshake failure, broker logs `no shared cipher` |
-| `PSK-AES128-CCM8` **and** `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` |
+| Both peers offer | Server security level | Negotiated |
+|---|---|---|
+| `PSK-AES128-CCM8` | `@SECLEVEL=0` | `PSK-AES128-CCM8` |
+| `PSK-AES128-CCM8` | default | nothing |
 
-The third row is the one that matters. The client offered CCM8, the server
-ranked it first, `SSL_OP_CIPHER_SERVER_PREFERENCE` was set, and the server
-chose GCM anyway.
+And against the broker itself, rebuilt with `@SECLEVEL=0` appended to its
+cipher list purely to measure it (the change was reverted, see below):
 
-**An OpenSSL cipher list can contain a suite that OpenSSL cannot select.**
-That is the finding. `openssl ciphers` listing a suite, and
-`set_cipher_list` accepting it, both mean only that the name parsed.
+| Client offers | Broker as shipped | Broker at `@SECLEVEL=0` |
+|---|---|---|
+| `PSK-AES128-CCM8` alone | nothing: `no shared cipher` | `PSK-AES128-CCM8` |
+| `PSK-AES128-CCM8` + `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` | `PSK-AES128-CCM8` |
+| certificate, TLS 1.2 | `ECDHE-ECDSA-AES128-GCM-SHA256` | `ECDHE-ECDSA-AES128-GCM-SHA256`, verify 0 |
 
-The two explanations that were wrong, both worth keeping because each was
-plausible and each was checked into the ground:
+**The finding that survives all of this, in its sharpest form:**
+`openssl ciphers 'PSK-AES128-CCM8'` prints the suite identically at security
+levels 0, 1 and 2, so the CLI listing cannot tell you whether the suite is
+selectable. Neither can `set_cipher_list` accepting it. That is exactly the
+trap under any build-time `grep CCM8` check, including the one in this
+repo's Dockerfile and in `loft`'s.
 
-- *"The device did not offer CCM8."* Inferred here from the preference
-  order: if CCM8 had been offered, a server that ranks it first would have
-  taken it. The device connector work then read the offered list straight
-  off the socket (`getsockopt(TLS_CIPHERSUITE_LIST)`, which Zephyr answers
-  from `mbedtls_ssl_list_ciphersuites()`, so it is what goes into the
-  ClientHello) and `0xC0A8` was in it, twice. The inference was sound and
-  its premise was false: preference only ranks suites the server can
-  actually select.
+Three explanations were wrong on the way here, each plausible, each
+disproved by a measurement rather than by argument:
+
+- *"The device did not offer CCM8."* Inferred from the preference order: a
+  server ranking CCM8 first would have taken it if offered. The device work
+  read the ClientHello off the socket and `0xC0A8` was in it. The premise
+  was false: preference only ranks suites the server's security level lets
+  it select.
 - *"`0x00A8` is CCM8."* It is `TLS_PSK_WITH_AES_128_GCM_SHA256`; CCM8 is
-  `0xC0A8`, one byte apart in the prefix.
+  `0xC0A8`.
+- *"This OpenSSL cannot negotiate CCM8 between two OpenSSL peers at all,
+  even at security level 0 with the suite named on both sides."* Recorded
+  here as measured, and it was not. The `s_server` control it rested on was
+  failing for an unrelated reason: **`s_server` exits when its stdin reaches
+  EOF**, which it does immediately when backgrounded in a script, so the
+  client sees `unexpected eof while reading` and it reads as a negotiation
+  failure. Holding stdin open (`sleep 10 | openssl s_server ...`) makes the
+  same command negotiate CCM8. The control had failed for GCM too, which
+  should have been the tell that the harness was at fault rather than the
+  suite, and was not followed up.
 
-Where that leaves it: the **device half is as verified as it can be on this
-host**, and needs no fixing. Closing CCM8 needs a server that can select it,
-which means testing the VPS's own OpenSSL (one `s_server` and `s_client`
-pair, in the bring-up checklist) or the bench against the production
-listener. The device connector work notes the same client already negotiated
-CCM8 for real over DTLS against libcoap's mbedTLS backend, so the client
-side has been proven once by a server that could take it.
-
-**How much of the fleet this can actually reach.** Two of the broker's three
-PSK suites are selectable on this OpenSSL, so a peer has to offer CCM8 *and
-nothing else* to fail:
-
-| Client offers | Negotiated |
-|---|---|
-| `PSK-AES128-CCM8` alone | nothing |
-| `PSK-AES128-GCM-SHA256` alone | `PSK-AES128-GCM-SHA256` |
-| `PSK-AES128-CBC-SHA256` alone | `PSK-AES128-CBC-SHA256` |
-| `PSK-AES128-CCM8` + `PSK-AES128-CBC-SHA256` | `PSK-AES128-CBC-SHA256` |
-
-**No first-party build offers CCM8 alone.** Every PSK-capable board
-configuration in the device samples sets both the CCM and GCM wants
-(`coap_dtls_init` and `mqtt_init`, native_sim and esp32c6), and the measured
-MQTT ClientHello carries six suites including GCM, which is why it lands
-cleanly. A CCM8-only offer would need a build that deliberately drops
-`PSA_WANT_ALG_GCM`, and none does. The device-side rule that follows is
-worth stating as a rule: **a PSK build keeps GCM wanted**, and then a broker
-that cannot select CCM8 is a non-event.
-
-**One profile is unmeasured**: the nRF91 modem-offloaded path, where the
-suite list comes from modem firmware rather than from PSA wants, so nothing
-in the device Kconfig governs it. This design's own device-plan section says
-the modem "advertises two of the bridge's three PSK suites", which would
-rule the failure out, but that line carries neither of this document's
-evidence markers and does not say *which* two. Treat it as unverified. One
-instrumented connect prints the offer, the same read the device work used
-here, and it belongs with the bench items.
-
-So the risk is real but narrow, and stating it as "constrained cellular is
-the profile most likely to offer CCM8 alone" was an overstatement: nothing
-measured offers CCM8 alone, and the only profile that could is one nobody
-has looked at. Keep the bring-up check, which costs a minute and answers it
-for whatever OpenSSL the VPS actually has, and note that the image build
-check cannot.
+**Status: a decision, not a defect.** Serving CCM8 needs the broker's
+security level lowered, which is a one-line change that was measured working
+and then reverted, because it lowers the floor for the certificate
+handshakes sharing that context as well. Whether to take that trade, scope
+it to PSK handshakes only, or decline CCM8 and rely on every build also
+offering GCM, is an owner decision and is with the lead. Until then the
+practical position is unchanged and narrow: every measured build offers GCM
+or CBC alongside CCM8 and lands there, and only a peer offering CCM8 alone
+would fail.
 
 ## mbedTLS interoperability, from the device connector work
 

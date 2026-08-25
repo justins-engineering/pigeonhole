@@ -22,12 +22,12 @@ RUN apt-get update \
   #
   # Worth knowing what this does and does not prove: it proves the names
   # parse and the suites are in the library's cipher table. It does NOT
-  # prove any of them can be selected. Measured on OpenSSL 3.6.3: a client
-  # offering PSK-AES128-CCM8 alongside GCM gets GCM, and one offering CCM8
-  # alone gets "no shared cipher", with CCM8 ranked first and server
-  # preference set. The only check that answers the real question is a
-  # negotiation, which docs/infra/mqtt-broker.md puts in the bring-up
-  # checklist against the host's own OpenSSL.
+  # prove any of them can be selected. `openssl ciphers 'PSK-AES128-CCM8'`
+  # prints the suite identically at security levels 0, 1 and 2, while only
+  # level 0 will actually select it, so this line cannot distinguish a
+  # library that will serve CCM8 from one that will refuse every device
+  # offering it. The only check that answers that is a negotiation, which
+  # docs/infra/mqtt-broker.md puts in the bring-up checklist.
   && openssl ciphers 'PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES128-CBC-SHA256' \
      | grep -q PSK-AES128-CCM8 \
   && useradd --system --no-create-home pigeonhole
