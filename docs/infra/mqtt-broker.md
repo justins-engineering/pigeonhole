@@ -177,6 +177,16 @@ openssl s_client -connect <host>:8883 -tls1_3 \
   -psk_identity <pigeon id> -psk <hex> </dev/null
 ```
 
+**Which version each kind of client uses, because it decides what a check is
+worth.** Zephyr's MQTT transport opens an `IPPROTO_TLS_1_2` socket
+unconditionally, so **every first-party device is a TLS 1.2 client**, on the
+certificate path and the PSK path alike. TLS 1.3 is reached only by
+off-the-shelf clients such as mosquitto. TLS 1.2 is therefore not a legacy
+path to keep working; it is the only path the fleet has. That is why check 1
+is pinned twice: an unpinned certificate check exercises 1.3, which no
+pigeon will ever speak, and this broker did once ship a listener that served
+1.3 perfectly and refused every 1.2 certificate client.
+
 What check 3 actually does, measured rather than assumed: OpenSSL does
 **not** route a TLS 1.3 external PSK through the TLS 1.2 PSK callback. The
 connection completes at TLS 1.3 against the server certificate, and no

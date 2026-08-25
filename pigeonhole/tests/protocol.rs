@@ -554,11 +554,29 @@ async fn a_certificate_client_with_no_tls13_can_still_connect() {
     "a device with no TLS 1.3 is exactly what certificate mode is for"
   );
 
-  // And it is a working session, not just a handshake.
+  // A working session, not just a handshake. Every first-party device is a
+  // TLS 1.2 client, so this covers the whole path a real pigeon takes rather
+  // than only the byte that used to fail.
   client
     .publish(topics::TELEMETRY, br#"{"tls":"1.2"}"#, 1, Some(1))
     .await;
   assert_eq!(client.next().await, Answer::Puback { pid: 1, reason: 0 });
+
+  client.subscribe(2, &[(topics::SHADOW_TARGET, 1)]).await;
+  assert_eq!(
+    client.next().await,
+    Answer::Suback {
+      pid: 2,
+      codes: vec![1]
+    }
+  );
+  match client.next().await {
+    Answer::Publish { topic, retain, .. } => {
+      assert_eq!(topic, topics::SHADOW_TARGET);
+      assert!(retain, "the retained target reaches a TLS 1.2 client too");
+    }
+    other => panic!("expected the retained target, got {other:?}"),
+  }
 
   h.shutdown().await;
 }

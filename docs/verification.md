@@ -139,9 +139,22 @@ handshakes, which no OpenSSL client here can stand in for.
 | PSK, TLS 1.2 | `0x00A8`, `TLS_PSK_WITH_AES_128_GCM_SHA256` | PSK works end to end with a constrained client; two sessions in one run, initial connect and reconnect |
 | Certificate, TLS 1.2 | `0xC02B`, `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` | all-ECDSA, which is what anchoring the chain at ISRG Root X2 is for, and the device build wants no RSA at all |
 
-The certificate row is also independent confirmation that the TLS 1.2
-cipher-list fix above is right: a real device completing the handshake that
-failed before it.
+The certificate row was re-run against this tree at `c6eee61` with nothing
+patched or overridden, and is the independent confirmation that the TLS 1.2
+cipher-list fix is right: a real device completing the handshake that failed
+before it. That run was a full driver pass, not a handshake: retained target
+applied, one shadow report per target version, telemetry and a dictionary-log
+chunk on their own routes, a mid-session config push applied and reported
+converged, and a reconnect after the broker was killed underneath it, with
+the second session negotiating `0xC02B` again.
+
+**Every first-party device is a TLS 1.2 client.** Zephyr's MQTT transport
+opens an `IPPROTO_TLS_1_2` socket unconditionally, on the certificate path
+and the PSK path alike, so TLS 1.3 is reached only by off-the-shelf clients
+such as mosquitto. That is the fact that makes the defect above a fleet
+outage rather than a compatibility gap, and it is why the certificate check
+is now pinned to each version separately: the unpinned form tests the one
+version no pigeon can speak.
 
 ## Live, through the broker to dovecote-staging
 

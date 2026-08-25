@@ -71,9 +71,11 @@ pub enum Transport {
     /// Name to verify the chain against, when it differs from the dialled
     /// host (a dev certificate reached over a loopback address).
     server_name: Option<String>,
-    /// Offer no TLS 1.3, standing in for a device that has none. The Zephyr
-    /// connector is one, so this is the shape a broker actually has to
-    /// serve, not a test convenience.
+    /// Offer no TLS 1.3. For a pigeon this is not a mode but the only
+    /// thing it can be: Zephyr's MQTT transport opens an `IPPROTO_TLS_1_2`
+    /// socket unconditionally, so every first-party device is a TLS 1.2
+    /// client on both auth paths. TLS 1.3 is exercised only by off-the-shelf
+    /// clients.
     tls12_only: bool,
   },
   Psk {
