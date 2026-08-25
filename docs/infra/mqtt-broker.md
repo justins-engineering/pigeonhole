@@ -93,13 +93,34 @@ Every step here is owner-gated.
    systemd-analyze security pigeonhole.service
    ```
 
-6. **Renewal.** certbot's renew hook restarts the unit. That is cheap
+6. **Check that this host's OpenSSL can SELECT the constrained suites**, not
+   merely list them. A cipher list can contain a suite OpenSSL will never
+   choose: on the workstation this was developed on, `PSK-AES128-CCM8` lists
+   in `openssl ciphers`, is accepted by `set_cipher_list`, is ranked first
+   with server preference, and is still never selected. Against the running
+   broker:
+
+   ```sh
+   # Offer CCM8 alone. Anything other than a CCM8 cipher line means this
+   # host cannot serve a device that offers only CCM8.
+   HEX=$(printf '<tls_psk_secret>' | xxd -p -c 200)
+   openssl s_client -connect <host>:8883 -tls1_2 \
+     -psk_identity <pigeon id> -psk "$HEX" \
+     -cipher 'PSK-AES128-CCM8:@SECLEVEL=0' -ciphersuites '' </dev/null \
+     | grep -E 'Cipher *:'
+   ```
+
+   If it fails, GCM and CBC still serve every device that offers them, which
+   so far is all of them; record it and raise it before a CCM8-only device
+   is provisioned.
+
+7. **Renewal.** certbot's renew hook restarts the unit. That is cheap
    because the shutdown drains: in-flight publishes finish and are
    acknowledged, every session is told the server is shutting down, and the
    fleet reconnects with backoff. `TimeoutStopSec=45s` sits above the drain
    budget so systemd never kills the process mid-drain.
 
-7. **Backend.** Set `MQTT_DEVICE_HOST` in dovecote's `wrangler.toml` so
+8. **Backend.** Set `MQTT_DEVICE_HOST` in dovecote's `wrangler.toml` so
    minted `Mqtt` endpoints point here. Where it is empty an environment
    falls back to its own API host, which is harmless because test clients
    dial the broker explicitly.

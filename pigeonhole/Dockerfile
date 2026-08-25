@@ -20,11 +20,14 @@ RUN apt-get update \
   # PSK suites the broker is configured for. A silently PSK-less build would
   # refuse every PSK device at handshake instead.
   #
-  # Worth knowing what this does and does not prove: it proves the suites are
-  # in the library's cipher table, not that a handshake will negotiate one.
-  # On some builds PSK-AES128-CCM8 lists here and still cannot be negotiated
-  # by an OpenSSL peer at all; the real CCM8 client is mbedTLS on the device,
-  # so CCM8 is verified there rather than here.
+  # Worth knowing what this does and does not prove: it proves the names
+  # parse and the suites are in the library's cipher table. It does NOT
+  # prove any of them can be selected. Measured on OpenSSL 3.6.3: a client
+  # offering PSK-AES128-CCM8 alongside GCM gets GCM, and one offering CCM8
+  # alone gets "no shared cipher", with CCM8 ranked first and server
+  # preference set. The only check that answers the real question is a
+  # negotiation, which docs/infra/mqtt-broker.md puts in the bring-up
+  # checklist against the host's own OpenSSL.
   && openssl ciphers 'PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES128-CBC-SHA256' \
      | grep -q PSK-AES128-CCM8 \
   && useradd --system --no-create-home pigeonhole

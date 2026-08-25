@@ -101,32 +101,56 @@ comments now say what was measured:
   certificate handshake, presents no CONNECT password, and is refused there.
   No session reaches the PSK code by that path.
 
-**`PSK-AES128-CCM8` is still open**, and one attempt to close it is worth
-recording because it nearly went in as a pass.
+**`PSK-AES128-CCM8` is still open, and the cause is now located.** Two
+wrong explanations were tried on the way, which is why this is written out
+in full rather than as a row.
 
-The broker offers CCM8 first, but it could not be exercised here: on this
-OpenSSL build no CCM8 suite is negotiable between an OpenSSL client and
-server at all, PSK or ECDHE, even at security level 0 with the suite named
-explicitly on both sides. It still appears in `openssl ciphers` output,
-which is why a build-time `openssl ciphers | grep CCM8` check passes and
-proves less than it looks like it does. That check is worth re-reading
-wherever it is used.
+The suite is first in the broker's cipher list, `set_cipher_list` accepts
+it, and `openssl ciphers` shows it. It is still never selected. Probing the
+running broker with an OpenSSL client on this host:
 
-The device connector work then reported a Zephyr/mbedTLS client negotiating
-`0x00a8` and read it as CCM8. It is not: `0x00A8` is
-`TLS_PSK_WITH_AES_128_GCM_SHA256` (RFC 5487), and CCM8 is `0xC0A8`
-(RFC 6655). One byte apart in the prefix.
+| Client offers | Negotiated |
+|---|---|
+| `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` |
+| `PSK-AES128-CCM8` only | nothing: handshake failure, broker logs `no shared cipher` |
+| `PSK-AES128-CCM8` **and** `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` |
 
-The broker's own configuration is the independent check that settles it.
-CCM8 is **first** in the cipher list and `SSL_OP_CIPHER_SERVER_PREFERENCE`
-is set, so had the client offered CCM8 the server would have chosen it.
-Landing on GCM proves the client did not offer it, which fits a build whose
-mbedTLS or PSA configuration has no CCM enabled. A code point and a
-preference order agreeing is what makes this a correction rather than two
-opinions.
+The third row is the one that matters. The client offered CCM8, the server
+ranked it first, `SSL_OP_CIPHER_SERVER_PREFERENCE` was set, and the server
+chose GCM anyway.
 
-CCM8 therefore stays open, and the way to close it is specific: enable CCM
-in the device build and re-run, expecting `0xC0A8`.
+**An OpenSSL cipher list can contain a suite that OpenSSL cannot select.**
+That is the finding. `openssl ciphers` listing a suite, and
+`set_cipher_list` accepting it, both mean only that the name parsed.
+
+The two explanations that were wrong, both worth keeping because each was
+plausible and each was checked into the ground:
+
+- *"The device did not offer CCM8."* Inferred here from the preference
+  order: if CCM8 had been offered, a server that ranks it first would have
+  taken it. The device connector work then read the offered list straight
+  off the socket (`getsockopt(TLS_CIPHERSUITE_LIST)`, which Zephyr answers
+  from `mbedtls_ssl_list_ciphersuites()`, so it is what goes into the
+  ClientHello) and `0xC0A8` was in it, twice. The inference was sound and
+  its premise was false: preference only ranks suites the server can
+  actually select.
+- *"`0x00A8` is CCM8."* It is `TLS_PSK_WITH_AES_128_GCM_SHA256`; CCM8 is
+  `0xC0A8`, one byte apart in the prefix.
+
+Where that leaves it: the **device half is as verified as it can be on this
+host**, and needs no fixing. Closing CCM8 needs a server that can select it,
+which means testing the VPS's own OpenSSL (one `s_server` and `s_client`
+pair, in the bring-up checklist) or the bench against the production
+listener. The device connector work notes the same client already negotiated
+CCM8 for real over DTLS against libcoap's mbedTLS backend, so the client
+side has been proven once by a server that could take it.
+
+**Production risk, stated plainly.** A device that offers *only* CCM8 cannot
+connect to a broker whose OpenSSL cannot select it. Every device seen so far
+also offers GCM and lands there, so nothing is broken today, but the
+constrained cellular profile CCM8 exists for is exactly the one likely to
+offer it alone. Test selection on the VPS before assuming otherwise, and
+note that the image build check cannot answer this question.
 
 ## mbedTLS interoperability, from the device connector work
 
