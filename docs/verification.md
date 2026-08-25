@@ -98,6 +98,36 @@ rather than a bug. The frame path is a synchronous upsert at the Durable
 Object; the QoS 1 path is a queued write. Ordering holds within a QoS class,
 not across them.
 
+## Re-run after the staging redeploy
+
+`dovecote-staging` was redeployed on 2026-08-25 (P1 backend plus batched
+telemetry and unrelated work), so the matrix was run again against it. Every
+flow above still holds; the numbers below are from the second run.
+
+| Flow | Observed |
+|---|---|
+| CONNECT, MQTT 5, and the retained seed | accepted and seeded 12:39:29.605Z |
+| Dashboard `PUT` to MQTT push | **178 ms**, 12:39:34.463Z to 12:39:34.641Z |
+| Telemetry QoS 1 (v5) | PUBACK; visible 12:40:42Z |
+| Telemetry QoS 0 (v5), flat frame on the held socket | no ack, as QoS 0 means; visible 12:40:43Z |
+| Telemetry QoS 0, MQTT 3.1.1 | visible 12:40:44Z |
+| Log chunk QoS 1 | PUBACK; 26 bytes read back byte-identical |
+| Shadow report QoS 1, MQTT 3.1.1 | PUBACK; `current_config` updated |
+| Retained target on `pigeon/#`, MQTT 3.1.1 | delivered |
+| `token/refresh` mid-session | DISCONNECT 0x87 at 12:39:43.397Z, stale-token reconnect refused 0x86 at 12:39:45.532Z |
+
+The backend gained a batched form of the telemetry WebSocket frame in that
+deploy (`{"reports":[...]}`). The bridge does not send it and does not need
+to: the QoS 0 rows above are the flat frame still being accepted, which is
+what makes that a later optimisation rather than a compatibility break.
+
+One row is an accident worth keeping. The first attempt gave its publishers
+a client id that disagreed with the username, and every one was refused
+`ClientIdNotValid` (v5 0x85, 3.1.1 0x02) while the subscriber, whose id
+agreed, stayed up. The identity-agreement rule is therefore confirmed
+against a live platform as well as against the mock, by a mistake rather
+than by a test written to find it.
+
 **PSK mode against staging is not reachable** and was not attempted: the
 internal credential route is gated on a source-address allowlist that is
 empty for staging, so it fails closed for any address. PSK mode is proven
