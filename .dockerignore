@@ -1,0 +1,14 @@
+# pigeonhole/Dockerfile builds from the repo root context; keep it to
+# sources. target/ alone is gigabytes and would be copied in before the
+# build even starts.
+target/
+**/target/
+.git/
+.claude/
+# Credential material must never enter the build context: COPY . . would
+# bake it into a persistent layer and the BuildKit cache on whatever host
+# runs the build. The container gets its secret from compose env_file and
+# its TLS files from a bind mount.
+infra/pigeonhole.env
+infra/tls/
+scripts/dev-cert/
