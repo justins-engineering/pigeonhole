@@ -145,12 +145,41 @@ listener. The device connector work notes the same client already negotiated
 CCM8 for real over DTLS against libcoap's mbedTLS backend, so the client
 side has been proven once by a server that could take it.
 
-**Production risk, stated plainly.** A device that offers *only* CCM8 cannot
-connect to a broker whose OpenSSL cannot select it. Every device seen so far
-also offers GCM and lands there, so nothing is broken today, but the
-constrained cellular profile CCM8 exists for is exactly the one likely to
-offer it alone. Test selection on the VPS before assuming otherwise, and
-note that the image build check cannot answer this question.
+**How much of the fleet this can actually reach.** Two of the broker's three
+PSK suites are selectable on this OpenSSL, so a peer has to offer CCM8 *and
+nothing else* to fail:
+
+| Client offers | Negotiated |
+|---|---|
+| `PSK-AES128-CCM8` alone | nothing |
+| `PSK-AES128-GCM-SHA256` alone | `PSK-AES128-GCM-SHA256` |
+| `PSK-AES128-CBC-SHA256` alone | `PSK-AES128-CBC-SHA256` |
+| `PSK-AES128-CCM8` + `PSK-AES128-CBC-SHA256` | `PSK-AES128-CBC-SHA256` |
+
+**No first-party build offers CCM8 alone.** Every PSK-capable board
+configuration in the device samples sets both the CCM and GCM wants
+(`coap_dtls_init` and `mqtt_init`, native_sim and esp32c6), and the measured
+MQTT ClientHello carries six suites including GCM, which is why it lands
+cleanly. A CCM8-only offer would need a build that deliberately drops
+`PSA_WANT_ALG_GCM`, and none does. The device-side rule that follows is
+worth stating as a rule: **a PSK build keeps GCM wanted**, and then a broker
+that cannot select CCM8 is a non-event.
+
+**One profile is unmeasured**: the nRF91 modem-offloaded path, where the
+suite list comes from modem firmware rather than from PSA wants, so nothing
+in the device Kconfig governs it. This design's own device-plan section says
+the modem "advertises two of the bridge's three PSK suites", which would
+rule the failure out, but that line carries neither of this document's
+evidence markers and does not say *which* two. Treat it as unverified. One
+instrumented connect prints the offer, the same read the device work used
+here, and it belongs with the bench items.
+
+So the risk is real but narrow, and stating it as "constrained cellular is
+the profile most likely to offer CCM8 alone" was an overstatement: nothing
+measured offers CCM8 alone, and the only profile that could is one nobody
+has looked at. Keep the bring-up check, which costs a minute and answers it
+for whatever OpenSSL the VPS actually has, and note that the image build
+check cannot.
 
 ## mbedTLS interoperability, from the device connector work
 

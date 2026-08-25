@@ -110,9 +110,12 @@ Every step here is owner-gated.
      | grep -E 'Cipher *:'
    ```
 
-   If it fails, GCM and CBC still serve every device that offers them, which
-   so far is all of them; record it and raise it before a CCM8-only device
-   is provisioned.
+   If it fails, note that GCM and CBC are both selectable here and every
+   first-party build offers GCM alongside CCM, so a failure is a non-event
+   until something offers CCM8 alone. The one profile that could is the
+   nRF91 modem-offloaded path, whose suite list comes from modem firmware
+   and has not been measured. Record the result and raise it before a
+   cellular device is provisioned against this host.
 
 7. **Renewal.** certbot's renew hook restarts the unit. That is cheap
    because the shutdown drains: in-flight publishes finish and are
