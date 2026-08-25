@@ -261,6 +261,37 @@ CCM8 client is mbedTLS on the device, so this is verified on the bench in
 the device phase, and against the VPS's own OpenSSL at production
 bring-up. GCM and CBC PSK suites are confirmed working.
 
+## A note for `loft`, which shares this box
+
+The trap under the CCM8 check above is not specific to this broker, and
+`loft` is on the same VPS with the same OpenSSL.
+
+`openssl ciphers 'PSK-AES128-CCM8'` prints the suite **identically at
+security levels 0, 1 and 2**, while only level 0 will select it. So a
+build-time check of the shape
+
+```sh
+openssl ciphers 'PSK-AES128-CCM8:...' | grep -q PSK-AES128-CCM8
+```
+
+passes on a library that will refuse every device offering that suite. Both
+this repo's `Dockerfile` and `loft`'s carry a check of exactly that shape,
+and neither can answer the question it looks like it is answering. Only a
+negotiation can.
+
+Two things follow for `loft` specifically, neither verified here:
+
+- Its OpenSSL DTLS listener presumably runs at the default security level
+  too, in which case it does not serve `PSK-AES128-CCM8` either, whatever
+  its cipher list says. The loopback `s_server` pair above answers it for
+  DTLS with `-dtls1_2` in place of `-tls1_2`.
+- Its mbedTLS CID listener is a different stack and none of this applies to
+  it. The CoAP CID work was on that listener, so a device negotiating CCM8
+  over CID says nothing about the OpenSSL path.
+
+Worth an hour on that repo before a constrained device is pointed at either
+service, and cheap to answer.
+
 ## What the logs say
 
 One summary line a minute at info:
