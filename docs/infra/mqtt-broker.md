@@ -36,9 +36,18 @@ example read the same set, so the two shapes are configured identically.
 A missing secret or an unreadable key refuses to start. There is no degraded
 mode to fall back to: without a servable chain there is no listener.
 
+`pigeonhole --check` reads the same configuration, builds the TLS context
+(so the chain and key must parse and match), resolves the listen address,
+prints the leaf's validity window, and exits without binding. Run it from
+the unit's own credential set with `systemd-run` (the exact invocation is
+in `p4-bringup.md`, step 8) to validate an install or a renewed certificate
+before a restart finds the fault.
+
 ## Production bring-up (systemd, the production path)
 
-Every step here is owner-gated.
+Every step here is owner-gated. This section is the reasoning; the ordered
+procedure with exact commands, expected output and a rollback per step is
+`p4-bringup.md`, and that is the one to execute from.
 
 1. **DNS.** `mqtt.pidgeiot.com` A record to the VPS, DNS-only. Cloudflare
    cannot proxy MQTT without Spectrum, so the VPS address is exposed exactly
@@ -83,7 +92,10 @@ Every step here is owner-gated.
    as PID 1 and re-exposes it into the per-unit credential store, which is
    where the broker's own unprivileged dynamic uid reads from.
 
-4. **Firewall.** An `INPUT` accept on 8883/tcp, next to `loft`'s rules.
+4. **Firewall.** An `INPUT` accept on 8883/tcp on both address families,
+   next to `loft`'s rules (`infra/firewall-8883.sh`). The IPv6 side of the
+   host chain, which the AAAA record makes load-bearing, is
+   `infra/ip6tables-baseline.sh`.
 
 5. **Unit.** `install -m 0644 infra/pigeonhole.service
    /etc/systemd/system/`, `systemctl daemon-reload`, `systemctl enable --now
@@ -137,7 +149,9 @@ Every step here is owner-gated.
       -cipher 'PSK-AES128-CCM8:@SECLEVEL=0' </dev/null | grep '^New,'
    ```
 
-7. **Renewal.** certbot's renew hook restarts the unit. That is cheap
+7. **Renewal.** certbot's deploy hook (`infra/letsencrypt-deploy-hook.sh`,
+   installed under `/etc/letsencrypt/renewal-hooks/deploy/`) restarts the
+   unit when this lineage renews. That is cheap
    because the shutdown drains: in-flight publishes finish and are
    acknowledged, every session is told the server is shutting down, and the
    fleet reconnects with backoff. `TimeoutStopSec=45s` sits above the drain

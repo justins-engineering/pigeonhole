@@ -111,7 +111,9 @@ Two deploy shapes read the same environment-variable config (`PIGEONHOLE_LISTEN`
   documentation-grade path for developers who want to run the bridge themselves, not the
   production path.
 
-`docs/infra/mqtt-broker.md` is the runbook for both.
+`docs/infra/mqtt-broker.md` is the runbook for both; `docs/infra/p4-bringup.md` is the
+ordered production procedure, with the artifacts it installs under `infra/` and
+`scripts/infra/`.
 
 ## License
 
