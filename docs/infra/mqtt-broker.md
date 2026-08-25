@@ -258,15 +258,18 @@ distinguishable, which OpenSSL decides rather than this broker. It costs
 nothing: a pigeon id is a 256-bit Durable Object id, so there is nothing to
 enumerate.
 
-**PSK-AES128-CCM8, open.** The broker offers it and `set_cipher_list`
-accepts it, but it could not be exercised with OpenSSL 3.6.3: on that build
-no CCM8 suite is negotiable between an OpenSSL client and server at all, PSK
-or ECDHE, even at security level 0 with the suite named explicitly on both
-sides. The suite still lists in `openssl ciphers`, which is why the image
-build check passes and proves less than it looks like it does. The real
-CCM8 client is mbedTLS on the device, so this is verified on the bench in
-the device phase, and against the VPS's own OpenSSL at production
-bring-up. GCM and CBC PSK suites are confirmed working.
+**PSK-AES128-CCM8 is served, and it needed work to be.** OpenSSL's default
+security level refuses to *select* the suite while still parsing the name
+and listing it, so the broker relaxes the level per connection, and only for
+a ClientHello that offered CCM8 (`relax_for_ccm8` in `tls.rs`; ADR D carries
+the note). Confirmed on-device: a Zephyr/mbedTLS client negotiates `0xC0A8`
+against this broker, where the same client on the same build got `0x00A8`
+(GCM) before the change.
+
+Check 6 in the bring-up list above is what verifies this on a given host,
+and it verifies the scoping rather than bare selectability: CCM8 alone comes
+back as CCM8, CCM8 alongside GCM also comes back as CCM8 because server
+preference ranks it first, and a certificate client is unaffected.
 
 ## A note for `loft`, which shares this box
 
