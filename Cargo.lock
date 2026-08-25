@@ -1017,6 +1017,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "foreign-types",
  "futures-util",
  "mqtt-proto",
  "openssl",

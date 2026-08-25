@@ -30,10 +30,12 @@
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
+use foreign_types::ForeignTypeRef;
 use openssl::error::ErrorStack;
 use openssl::ex_data::Index;
 use openssl::ssl::{
-  Ssl, SslContext, SslContextBuilder, SslMethod, SslMode, SslOptions, SslVersion,
+  ClientHelloResponse, Ssl, SslAlert, SslContext, SslContextBuilder, SslMethod, SslMode,
+  SslOptions, SslRef, SslVersion,
 };
 
 use crate::psk::PskResolver;
@@ -63,6 +65,22 @@ ECDHE-ECDSA-AES256-GCM-SHA384:\
 ECDHE-ECDSA-CHACHA20-POLY1305:\
 ECDHE-RSA-AES128-GCM-SHA256:\
 ECDHE-RSA-AES256-GCM-SHA384";
+
+// Reads the ciphersuites a ClientHello offered, as raw two-byte code
+// points. The `openssl` crate binds the ClientHello callback but not this
+// accessor, so it is one hand-written extern, the same shim pattern the
+// maximum-send-fragment control below uses.
+unsafe extern "C" {
+  fn SSL_client_hello_get0_ciphers(
+    s: *mut openssl_sys::SSL,
+    out: *mut *const std::ffi::c_uchar,
+  ) -> usize;
+}
+
+/// `TLS_PSK_WITH_AES_128_CCM_8`. The only suite this broker serves that
+/// OpenSSL's default security level refuses to *select*, which is why it is
+/// the only one that costs a relaxation.
+const PSK_AES128_CCM8: u16 = 0xC0A8;
 
 /// Records the size of the largest TLS record the server will emit.
 /// OpenSSL's `SSL_CTX_set_max_send_fragment` has no binding in the `openssl`
@@ -105,6 +123,11 @@ pub fn build_listener_context(
   builder.set_mode(SslMode::RELEASE_BUFFERS);
   set_max_send_fragment(&mut builder, MAX_SEND_FRAGMENT)?;
 
+  // Relax the security level for the connections that need it, and only
+  // those. See `relaxes_security_level` for what "need" means and why the
+  // certificate path is untouched.
+  builder.set_client_hello_callback(relax_for_ccm8);
+
   builder.set_psk_server_callback(move |ssl, identity, psk_out| {
     psk_callback(&resolver, ssl, identity, psk_out)
   });
@@ -129,6 +152,51 @@ fn set_max_send_fragment(builder: &mut SslContextBuilder, bytes: usize) -> Resul
   } else {
     Err(ErrorStack::get())
   }
+}
+
+/// OpenSSL's default security level will not *select* `PSK-AES128-CCM8`,
+/// though it parses the name and lists it. Serving the constrained-device
+/// suite therefore needs the level lowered, and lowering it on the context
+/// would lower it for the certificate handshakes sharing that context too.
+///
+/// This lowers it per connection instead, and only for a ClientHello that
+/// actually offered CCM8. A certificate client never does, so its floor is
+/// the default one and nothing about its handshake changes. The one
+/// theoretical leak, a hello offering CCM8 that then negotiates a
+/// certificate suite at the lowered floor, cannot happen: CCM8 is ranked
+/// first under server preference, so a hello offering it selects it.
+fn relax_for_ccm8(
+  ssl: &mut SslRef,
+  _alert: &mut SslAlert,
+) -> Result<ClientHelloResponse, ErrorStack> {
+  if offered_ciphers(ssl).is_some_and(relaxes_security_level) {
+    ssl.set_security_level(0);
+  }
+  Ok(ClientHelloResponse::SUCCESS)
+}
+
+/// The raw offered-cipher bytes from the ClientHello being processed.
+fn offered_ciphers(ssl: &SslRef) -> Option<&[u8]> {
+  let mut out: *const std::ffi::c_uchar = std::ptr::null();
+  // Safety: called only from the ClientHello callback, where OpenSSL
+  // guarantees the hello is being parsed and the returned pointer is valid
+  // for the duration of the callback. The slice borrows from `ssl` and
+  // cannot outlive it.
+  let len = unsafe { SSL_client_hello_get0_ciphers(ssl.as_ptr(), &mut out) };
+  if out.is_null() || len == 0 {
+    return None;
+  }
+  Some(unsafe { std::slice::from_raw_parts(out, len) })
+}
+
+/// Whether an offered-cipher list contains a suite that only a lowered
+/// security level can select. Split out from the callback because this is
+/// where the parsing lives, and parsing two-byte big-endian code points out
+/// of an attacker-supplied buffer is the part worth testing directly.
+fn relaxes_security_level(offered: &[u8]) -> bool {
+  offered
+    .chunks_exact(2)
+    .any(|code| u16::from_be_bytes([code[0], code[1]]) == PSK_AES128_CCM8)
 }
 
 fn psk_callback(
@@ -181,4 +249,69 @@ fn psk_callback(
 /// and its credentials are whatever the CONNECT carries.
 pub fn psk_session(ssl: &openssl::ssl::SslRef) -> Option<(String, String)> {
   ssl.ex_data(*PSK_SESSION_INDEX).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The code points, from the IANA registry and confirmed against
+  /// OpenSSL's own table. `0x00A8` is GCM, not CCM8; the two are one byte
+  /// apart in the prefix and reading one as the other has already cost this
+  /// project a wrong conclusion.
+  const CCM8: [u8; 2] = [0xC0, 0xA8];
+  const GCM: [u8; 2] = [0x00, 0xA8];
+  const CBC: [u8; 2] = [0x00, 0xAE];
+  const ECDHE_ECDSA_AES128_GCM: [u8; 2] = [0xC0, 0x2B];
+
+  fn offered(suites: &[[u8; 2]]) -> Vec<u8> {
+    suites.iter().flatten().copied().collect()
+  }
+
+  #[test]
+  fn only_a_hello_offering_ccm8_earns_the_relaxation() {
+    assert!(relaxes_security_level(&offered(&[CCM8])));
+    assert!(relaxes_security_level(&offered(&[GCM, CCM8, CBC])));
+    assert!(relaxes_security_level(&offered(&[
+      ECDHE_ECDSA_AES128_GCM,
+      CCM8
+    ])));
+  }
+
+  #[test]
+  fn a_certificate_only_hello_keeps_the_default_floor() {
+    assert!(!relaxes_security_level(&offered(&[ECDHE_ECDSA_AES128_GCM])));
+  }
+
+  #[test]
+  fn the_psk_suites_that_already_worked_earn_nothing() {
+    // GCM and CBC are selectable at the default level, so they cost no
+    // relaxation and must not trigger one.
+    assert!(!relaxes_security_level(&offered(&[GCM])));
+    assert!(!relaxes_security_level(&offered(&[CBC])));
+    assert!(!relaxes_security_level(&offered(&[GCM, CBC])));
+  }
+
+  #[test]
+  fn the_gcm_code_point_is_not_mistaken_for_ccm8() {
+    assert!(
+      !relaxes_security_level(&offered(&[GCM])),
+      "0x00A8 is TLS_PSK_WITH_AES_128_GCM_SHA256, not CCM8"
+    );
+  }
+
+  #[test]
+  fn a_truncated_or_empty_list_is_read_without_panicking() {
+    assert!(!relaxes_security_level(&[]));
+    // An odd trailing byte is malformed; chunks_exact drops it rather than
+    // reading past the end.
+    assert!(!relaxes_security_level(&[0xC0]));
+    assert!(relaxes_security_level(&[0xC0, 0xA8, 0xC0]));
+  }
+
+  #[test]
+  fn a_byte_swapped_ccm8_does_not_match() {
+    // Guards the endianness: 0xA8C0 is not a suite this broker serves.
+    assert!(!relaxes_security_level(&[0xA8, 0xC0]));
+  }
 }

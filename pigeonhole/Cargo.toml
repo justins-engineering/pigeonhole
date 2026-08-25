@@ -14,6 +14,7 @@ bytes.workspace = true
 tokio.workspace = true
 openssl.workspace = true
 openssl-sys.workspace = true
+foreign-types.workspace = true
 tokio-openssl.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true

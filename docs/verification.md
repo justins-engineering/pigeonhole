@@ -152,15 +152,40 @@ disproved by a measurement rather than by argument:
   should have been the tell that the harness was at fault rather than the
   suite, and was not followed up.
 
-**Status: a decision, not a defect.** Serving CCM8 needs the broker's
-security level lowered, which is a one-line change that was measured working
-and then reverted, because it lowers the floor for the certificate
-handshakes sharing that context as well. Whether to take that trade, scope
-it to PSK handshakes only, or decline CCM8 and rely on every build also
-offering GCM, is an owner decision and is with the lead. Until then the
-practical position is unchanged and narrow: every measured build offers GCM
-or CBC alongside CCM8 and lands there, and only a peer offering CCM8 alone
-would fail.
+**Resolved: the security level is now lowered per connection, and only for
+a ClientHello that offered CCM8.** Lowering it on the context would have
+lowered it for the certificate handshakes sharing that context, which was
+not a trade worth making for a suite only PSK clients want. `relax_for_ccm8`
+in `tls.rs` does it in a ClientHello callback; reading the offered ciphers
+needs one hand-written extern, the same shim pattern the maximum-send-
+fragment control uses. ADR D carries the implementation note.
+
+Measured after the change, against the broker as it now ships:
+
+| Client offers | Negotiated |
+|---|---|
+| `PSK-AES128-CCM8` alone | `PSK-AES128-CCM8` |
+| `PSK-AES128-CCM8` + `PSK-AES128-GCM-SHA256` | `PSK-AES128-CCM8`, preference honored |
+| `PSK-AES128-GCM-SHA256` alone | `PSK-AES128-GCM-SHA256` |
+| `PSK-AES128-CBC-SHA256` alone | `PSK-AES128-CBC-SHA256` |
+| certificate, TLS 1.2 | `ECDHE-ECDSA-AES128-GCM-SHA256`, verify 0 |
+| certificate offering a weak group | refused, so the default floor held |
+
+The two CCM8 rows were written as failing tests first and watched fail
+against the old build, which is the only thing that makes them evidence
+rather than decoration. They live in `pigeonhole/tests/cipher_suites.rs`,
+alongside unit tests on the code-point scan itself, including one that
+pins `0x00A8` as GCM so the misreading that cost this project a wrong
+conclusion cannot be re-introduced silently.
+
+**What is proven about the floor, and what is not.** That a certificate
+client is refused a weak group proves the default level is in force on that
+path. There is no test that a certificate client is refused a *weak cipher
+suite*, because there cannot be one: every suite in `CERT_CIPHER_LIST` is
+acceptable at every security level, so the relaxation has no reachable
+effect on which certificate suite gets chosen even if it did leak. That is
+worth knowing as the reason the blast radius is small, rather than being
+mistaken for a gap in coverage.
 
 ## mbedTLS interoperability, from the device connector work
 

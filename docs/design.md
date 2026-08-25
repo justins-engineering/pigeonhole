@@ -341,6 +341,19 @@ password is the device token, which this rule keeps off the wire in the clear.
   PSK callback for a TLS 1.3 external PSK when no `psk_find_session` callback is set; still
   PSK-authenticated, harmless, and the implementation check includes `-tls1_3 -psk` so it is
   known, not assumed.
+- Implementation note, CCM8 and the security level (added after the listener was built and
+  the suite turned out not to be served): OpenSSL's default security level will not *select*
+  `PSK-AES128-CCM8`, though it parses the name, lists it in `openssl ciphers` identically at
+  levels 0, 1 and 2, and accepts it in `set_cipher_list`. Serving the constrained-device suite
+  this ADR ranks first therefore needs the level lowered. Lowering it on the context would
+  lower it for the certificate handshakes sharing that context, which is a trade this design
+  does not want, so it is lowered per connection in a ClientHello callback and only for a
+  hello that actually offered CCM8 (`relax_for_ccm8` in `tls.rs`). A certificate client never
+  offers it, so its floor is the default one. The one theoretical leak, a hello offering CCM8
+  that then negotiates a certificate suite at the lowered floor, cannot happen while CCM8 is
+  ranked first under server preference, because such a hello selects CCM8. Reading the offered
+  ciphers needs one hand-written extern (`SSL_client_hello_get0_ciphers`), the same shim
+  pattern the maximum-send-fragment control uses.
 - Trust, stated plainly: in certificate mode the bridge holds only what the device presented;
   in PSK mode it holds the service secret, which resolves any PSK-bearing pigeon's
   credentials, so a compromised bridge is trusted to exactly loft's degree. That is why the

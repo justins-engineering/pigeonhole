@@ -37,9 +37,12 @@ tokio = { version = "1", features = [
 # listener serves both certificate and PSK ciphersuites, and rustls has
 # no PSK. Same stack loft uses for the same reason.
 openssl = "0.10"
-# One control call the `openssl` crate has no binding for: the listener's
-# maximum send fragment (see pigeonhole/src/tls.rs).
+# Two calls the `openssl` crate has no binding for: the listener's maximum
+# send fragment, and reading a ClientHello's offered ciphers (both in
+# pigeonhole/src/tls.rs). `foreign-types` is how the raw SSL pointer those
+# need is reached, at the version `openssl` itself uses.
 openssl-sys = "0.9"
+foreign-types = "0.3"
 tokio-openssl = "0.6"
 # Upstream leg to dovecote's device routes: ordinary HTTPS, rustls is fine.
 reqwest = { version = "0.12", default-features = false, features = [
