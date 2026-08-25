@@ -212,10 +212,26 @@ impl Harness {
       &Transport::Certificate {
         ca_pem: Some(self.ca_pem.clone()),
         server_name: Some("localhost".to_string()),
+        tls12_only: false,
       },
     )
     .await
     .expect("tls connects")
+  }
+
+  /// A certificate-mode connection from a client with no TLS 1.3, which is
+  /// what the Zephyr device connector is.
+  pub async fn connect_tls12(&self) -> Result<RawConnection, String> {
+    RawConnection::connect(
+      &self.endpoint,
+      &Transport::Certificate {
+        ca_pem: Some(self.ca_pem.clone()),
+        server_name: Some("localhost".to_string()),
+        tls12_only: true,
+      },
+    )
+    .await
+    .map_err(|e| e.to_string())
   }
 
   /// A connection whose PSK handshake resolved through the mock's internal

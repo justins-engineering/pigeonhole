@@ -528,3 +528,68 @@ async fn a_keepalive_that_expires_closes_the_session() {
   }
   h.shutdown().await;
 }
+
+/// The hole this closes: the listener's cipher list ended in `:DEFAULT`,
+/// which OpenSSL treats as an initialiser rather than something to append,
+/// so the broker offered PSK suites and nothing else at TLS 1.2. Every TLS
+/// 1.3 client was fine, because their suites come from a different setter,
+/// which is why a passing certificate handshake check hid it. The clients
+/// certificate mode exists for are the ones that broke.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_certificate_client_with_no_tls13_can_still_connect() {
+  let h = Harness::start().await;
+
+  let connection = h
+    .connect_tls12()
+    .await
+    .expect("a TLS 1.2 certificate client completes the handshake");
+  let mut client = harness::Client {
+    connection,
+    version: V::V5,
+  };
+  client.send_connect(PIGEON, Some(PIGEON), Some(TOKEN)).await;
+  assert_eq!(
+    client.next().await,
+    Answer::ConnackAccepted,
+    "a device with no TLS 1.3 is exactly what certificate mode is for"
+  );
+
+  // And it is a working session, not just a handshake.
+  client
+    .publish(topics::TELEMETRY, br#"{"tls":"1.2"}"#, 1, Some(1))
+    .await;
+  assert_eq!(client.next().await, Answer::Puback { pid: 1, reason: 0 });
+
+  h.shutdown().await;
+}
+
+/// PSK stays ahead of the certificate suites in server preference, which is
+/// the rule the fix had to preserve: a device offering both should land on
+/// PSK rather than on a chain it may have no room to verify.
+#[tokio::test(flavor = "multi_thread")]
+async fn psk_still_wins_over_the_certificate_suites_for_a_tls12_client() {
+  use pigeonhole::tls::{CERT_CIPHER_LIST, PSK_CIPHER_LIST};
+
+  let configured = format!("{PSK_CIPHER_LIST}:{CERT_CIPHER_LIST}");
+  let psk_last = configured
+    .split(':')
+    .position(|suite| suite.starts_with("PSK-"))
+    .and_then(|first| {
+      configured
+        .split(':')
+        .enumerate()
+        .filter(|(_, suite)| suite.starts_with("PSK-"))
+        .map(|(i, _)| i)
+        .max()
+        .map(|last| (first, last))
+    })
+    .expect("PSK suites are configured");
+  let cert_first = configured
+    .split(':')
+    .position(|suite| suite.starts_with("ECDHE-"))
+    .expect("certificate suites are configured");
+  assert!(
+    psk_last.1 < cert_first,
+    "every PSK suite must precede every certificate suite: {configured}"
+  );
+}

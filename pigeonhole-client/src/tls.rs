@@ -22,9 +22,20 @@ pub const PSK_CIPHER_LIST: &str = "PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES
 /// Peer verification is unconditional. A client that skips it turns the one
 /// thing a certificate is for into decoration, and this client is also the
 /// harness that proves the broker's chain is servable.
-pub fn certificate_context(ca_pem: Option<&Path>) -> Result<SslContext, ErrorStack> {
+/// `tls12_only` caps the client at TLS 1.2, which is not a preference but a
+/// description: the Zephyr connector opens an `IPPROTO_TLS_1_2` socket and
+/// has no 1.3 to offer. A broker that only serves 1.3 certificate suites
+/// looks perfectly healthy until such a client dials it, so the client can
+/// say so and a test can hold the broker to it.
+pub fn certificate_context(
+  ca_pem: Option<&Path>,
+  tls12_only: bool,
+) -> Result<SslContext, ErrorStack> {
   let mut builder = SslContextBuilder::new(SslMethod::tls_client())?;
   builder.set_min_proto_version(Some(SslVersion::TLS1_2))?;
+  if tls12_only {
+    builder.set_max_proto_version(Some(SslVersion::TLS1_2))?;
+  }
   builder.set_verify(SslVerifyMode::PEER);
   match ca_pem {
     Some(path) => builder.set_ca_file(path)?,

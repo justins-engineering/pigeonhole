@@ -156,9 +156,14 @@ Run these against any broker before trusting it. The first two are the ones
 that must pass.
 
 ```sh
-# 1. Certificate mode, with verification on.
+# 1. Certificate mode, with verification on. Run it TWICE, once pinned to
+#    each version: an unpinned client picks TLS 1.3, and the TLS 1.2
+#    certificate path is a separate cipher list that has been broken before
+#    while 1.3 stayed healthy.
 openssl s_client -connect <host>:8883 -CAfile <ca.pem> -servername <host> \
-  -verify_return_error </dev/null
+  -tls1_2 -verify_return_error </dev/null
+openssl s_client -connect <host>:8883 -CAfile <ca.pem> -servername <host> \
+  -tls1_3 -verify_return_error </dev/null
 
 # 2. TLS 1.2 PSK. The -psk argument is HEX, and the convention is the hex of
 #    the secret string's UTF-8 bytes:

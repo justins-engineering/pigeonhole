@@ -44,6 +44,26 @@ use crate::psk::PskResolver;
 /// works against either terminator.
 pub const PSK_CIPHER_LIST: &str = "PSK-AES128-CCM8:PSK-AES128-GCM-SHA256:PSK-AES128-CBC-SHA256";
 
+/// TLS 1.2 certificate suites, named one by one rather than deferred to
+/// `DEFAULT`.
+///
+/// `DEFAULT` cannot be appended to a list: OpenSSL treats it as an
+/// initialiser, so anything before it survives and it itself contributes
+/// nothing. A list ending in `:DEFAULT` therefore offers only the suites
+/// spelled out ahead of it, which for this broker meant PSK only, and every
+/// TLS 1.2 certificate client got a handshake failure. TLS 1.3 clients were
+/// unaffected because their suites come from a different setter, which is
+/// exactly why that hole survived a certificate handshake check.
+///
+/// ECDSA first because the production chain is all-ECDSA (P-256 leaf under
+/// an ECDSA intermediate anchored at ISRG Root X2). The RSA pair is
+/// headroom for a self-hosted deployment whose certificate is RSA.
+pub const CERT_CIPHER_LIST: &str = "ECDHE-ECDSA-AES128-GCM-SHA256:\
+ECDHE-ECDSA-AES256-GCM-SHA384:\
+ECDHE-ECDSA-CHACHA20-POLY1305:\
+ECDHE-RSA-AES128-GCM-SHA256:\
+ECDHE-RSA-AES256-GCM-SHA384";
+
 /// Records the size of the largest TLS record the server will emit.
 /// OpenSSL's `SSL_CTX_set_max_send_fragment` has no binding in the `openssl`
 /// crate, so the control code is named here from OpenSSL's own `ssl.h`.
@@ -79,7 +99,7 @@ pub fn build_listener_context(
   // that decides among TLS 1.2 clients. Without the preference flag the
   // client's order wins, and a dual-capable device would land on a
   // certificate suite it may have no room to verify.
-  builder.set_cipher_list(&format!("{PSK_CIPHER_LIST}:DEFAULT"))?;
+  builder.set_cipher_list(&format!("{PSK_CIPHER_LIST}:{CERT_CIPHER_LIST}"))?;
   builder.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
 
   builder.set_mode(SslMode::RELEASE_BUFFERS);

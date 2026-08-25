@@ -38,15 +38,53 @@ rate becomes a number rather than an anecdote.
 
 Details and the commands are in `docs/infra/mqtt-broker.md`. In brief:
 
+These were re-run after the TLS 1.2 certificate defect below was fixed. Two
+rows changed meaning entirely, which is the reason this section now says
+which protocol version each check actually exercised.
+
 | Check | Result |
 |---|---|
-| Certificate mode, verification on | TLS 1.3, verify return code 0 |
+| Certificate mode, TLS 1.2 pinned | `ECDHE-ECDSA-AES128-GCM-SHA256`, verify return code 0 |
+| Certificate mode, TLS 1.3 pinned | verify return code 0 |
+| Certificate mode, version unpinned | TLS 1.3, verify return code 0 |
 | TLS 1.2 PSK, `PSK-AES128-GCM-SHA256` | negotiated, session authenticated |
-| TLS 1.2 client offering PSK and ECDHE | lands on PSK, as intended |
+| TLS 1.2 client offering both PSK and ECDHE | lands on PSK, server preference honored |
 | TLS 1.3 with a PSK offered | certificate handshake, PSK callback not reached |
 | Wrong PSK key | bad-record-mac alert |
 | Unknown PSK identity | alert 115, `unknown_psk_identity` |
 | `PSK-AES128-CCM8` | **not verified**, see below |
+
+## The TLS 1.2 certificate defect, and what hid it
+
+Found by the device connector work running a Zephyr client against a local
+broker, not by anything here. The listener's cipher list was
+`"{PSK suites}:DEFAULT"`, and OpenSSL treats `DEFAULT` as an initialiser
+rather than as a set to append: everything before it survives and it
+contributes nothing. The broker therefore offered the three PSK suites and
+no TLS 1.2 certificate suite at all, so **every TLS 1.2 certificate client
+got a handshake failure** while TLS 1.3 clients were fine, because their
+suites come from a separate setter.
+
+That is the class of client certificate mode exists for: off-the-shelf
+clients, and the Zephyr connector, which opens an `IPPROTO_TLS_1_2` socket
+and has no 1.3 to fall back to. The suites are now named one by one
+(`tls::CERT_CIPHER_LIST`).
+
+Two things in the first version of this document were wrong because of it,
+and both are worth naming rather than quietly editing:
+
+- The certificate row read "TLS 1.3, verify return code 0". True, and it
+  proved only TLS 1.3. Every certificate check here had let OpenSSL pick the
+  version, and OpenSSL picks 1.3.
+- The row "TLS 1.2 client offering PSK and ECDHE lands on PSK, as intended"
+  was **vacuous**. The server was offering no ECDHE at all, so PSK winning
+  demonstrated nothing about server preference. It is now a real result.
+
+The regression test (`a_certificate_client_with_no_tls13_can_still_connect`)
+drives a client capped at TLS 1.2 through a full CONNECT and publish, and
+was confirmed to fail against the old cipher list before being kept. The
+general lesson is cheap to state and was expensive to miss: a check that
+lets the peer choose the version only tests the version the peer chose.
 
 Two design assumptions were wrong, both in the safe direction, and the code
 comments now say what was measured:

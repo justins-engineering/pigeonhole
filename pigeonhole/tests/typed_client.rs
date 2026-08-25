@@ -14,6 +14,7 @@ fn certificate_config(h: &Harness, version: ProtocolVersion) -> ClientConfig {
     transport: Transport::Certificate {
       ca_pem: Some(h.ca_pem()),
       server_name: Some("localhost".to_string()),
+      tls12_only: false,
     },
     pigeon_id: PIGEON.to_string(),
     token: Some(TOKEN.to_string()),

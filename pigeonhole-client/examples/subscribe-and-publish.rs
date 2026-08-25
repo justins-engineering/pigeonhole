@@ -51,6 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       Transport::Certificate {
         ca_pem: std::env::var("PIGEONHOLE_CA").ok().map(PathBuf::from),
         server_name: std::env::var("PIGEONHOLE_SERVER_NAME").ok(),
+        // A device with no TLS 1.3 sets this; most hosts leave it off.
+        tls12_only: std::env::var("PIGEONHOLE_TLS12_ONLY").is_ok(),
       },
       Some(required("PIGEONHOLE_TOKEN")?),
     ),

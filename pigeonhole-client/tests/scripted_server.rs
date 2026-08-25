@@ -122,6 +122,7 @@ async fn certificate_mode_round_trips_a_v3_connect_and_connack() {
     &Transport::Certificate {
       ca_pem: Some(ca.clone()),
       server_name: Some("localhost".to_string()),
+      tls12_only: false,
     },
   )
   .await
@@ -178,6 +179,7 @@ async fn certificate_mode_round_trips_a_v5_connect_and_connack() {
     &Transport::Certificate {
       ca_pem: Some(ca.clone()),
       server_name: Some("localhost".to_string()),
+      tls12_only: false,
     },
   )
   .await

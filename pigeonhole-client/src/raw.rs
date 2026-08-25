@@ -71,6 +71,10 @@ pub enum Transport {
     /// Name to verify the chain against, when it differs from the dialled
     /// host (a dev certificate reached over a loopback address).
     server_name: Option<String>,
+    /// Offer no TLS 1.3, standing in for a device that has none. The Zephyr
+    /// connector is one, so this is the shape a broker actually has to
+    /// serve, not a test convenience.
+    tls12_only: bool,
   },
   Psk {
     identity: String,
@@ -83,6 +87,7 @@ impl Transport {
     Transport::Certificate {
       ca_pem: None,
       server_name: None,
+      tls12_only: false,
     }
   }
 }
@@ -110,8 +115,9 @@ impl RawConnection {
       Transport::Certificate {
         ca_pem,
         server_name,
+        tls12_only,
       } => {
-        let context = tls::certificate_context(ca_pem.as_deref())
+        let context = tls::certificate_context(ca_pem.as_deref(), *tls12_only)
           .map_err(|e| ClientError::Tls(format!("client context: {e}")))?;
         let mut ssl =
           Ssl::new(&context).map_err(|e| ClientError::Tls(format!("ssl object: {e}")))?;
