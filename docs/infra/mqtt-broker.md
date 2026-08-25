@@ -165,6 +165,13 @@ holds them. `scripts/dev-cert.sh`'s output is deliberately 700, so pointing
 the container straight at it fails with "not a readable file" rather than
 starting on a chain it cannot serve.
 
+**If you are pointing your own devices at this, have them offer
+`PSK-AES128-GCM-SHA256` as well as `PSK-AES128-CCM8`.** This broker serves
+CCM8 by relaxing OpenSSL's security level for exactly the connections that
+offered it, but a stock OpenSSL listener does not, and a device offering CCM8
+alone fails against one with nothing in the log to explain it. Wanting GCM
+too costs nothing and makes the device portable across brokers.
+
 The image checks at build time that its OpenSSL lists the PSK suites the
 broker is configured for. Worth knowing what that proves: the suites are in
 the library's cipher table, not that a handshake will negotiate one. See the
@@ -290,6 +297,18 @@ Two things follow for `loft` specifically, neither verified here:
 - Its mbedTLS CID listener is a different stack and none of this applies to
   it. The CoAP CID work was on that listener, so a device negotiating CCM8
   over CID says nothing about the OpenSSL path.
+
+The question for `loft` is narrower than "does it offer CCM8", though. Its
+CoAP devices offer CCM8 **and** GCM (measured on the bench C6), so they are
+landing on GCM today and nobody would have noticed. The gap only bites a
+CoAP device that offers CCM8 alone, and no such device is known to exist.
+
+One thing there does want re-reading rather than re-running: **if `loft`'s
+own verification ever recorded "CCM8 negotiated", check how it was
+measured.** The `s_server` stdin artifact above corrupts exactly that
+measurement, and it corrupts it in the direction of a false failure, so a
+recorded success is more likely to be sound than a recorded failure. A
+recorded failure is the one worth repeating with stdin held open.
 
 Worth an hour on that repo before a constrained device is pointed at either
 service, and cheap to answer.

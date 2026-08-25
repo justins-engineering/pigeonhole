@@ -197,8 +197,21 @@ handshakes, which no OpenSSL client here can stand in for.
 
 | Mode | Negotiated | Reading |
 |---|---|---|
-| PSK, TLS 1.2 | `0x00A8`, `TLS_PSK_WITH_AES_128_GCM_SHA256` | PSK works end to end with a constrained client; two sessions in one run, initial connect and reconnect |
+| PSK, before the CCM8 fix | `0x00A8`, `TLS_PSK_WITH_AES_128_GCM_SHA256` | the client offered CCM8 and got GCM, which is the whole security-level story above, seen from the device |
+| PSK, after it | `0xC0A8`, `TLS_PSK_WITH_AES_128_CCM_8` | the constrained-device suite, offered by a real mbedTLS client, selected by the broker, read back on-device by code point, with no client change |
 | Certificate, TLS 1.2 | `0xC02B`, `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` | all-ECDSA, which is what anchoring the chain at ISRG Root X2 is for, and the device build wants no RSA at all |
+
+**The CCM8 row is closed.** Run against this tree at `776b588` with nothing
+changed on the device side: `0xC0A8` twice in one run, initial connect and
+the post-restart reconnect, inside a full driver pass. That is the strongest
+form the confirmation could take, because the same client on the same build
+returned `0x00A8` before the fix: the variable was the broker.
+
+**The device-side rule survives the fix and should not be relaxed because of
+it.** A PSK build keeps GCM wanted. This broker selects CCM8 now, but a
+default-configured OpenSSL listener still will not, and a device offering
+CCM8 alone fails against one with nothing in the log to say why. That is a
+property of every deployment we do not run, including a self-hoster's.
 
 The certificate row was re-run against this tree at `c6eee61` with nothing
 patched or overridden, and is the independent confirmation that the TLS 1.2
