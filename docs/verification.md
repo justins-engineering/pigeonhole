@@ -53,6 +53,7 @@ which protocol version each check actually exercised.
 | Wrong PSK key | bad-record-mac alert |
 | Unknown PSK identity | alert 115, `unknown_psk_identity` |
 | `PSK-AES128-CCM8` | **not verified**, see below |
+| mbedTLS client, PSK and certificate | interoperates on both, see below |
 
 ## The TLS 1.2 certificate defect, and what hid it
 
@@ -100,15 +101,47 @@ comments now say what was measured:
   certificate handshake, presents no CONNECT password, and is refused there.
   No session reaches the PSK code by that path.
 
-**`PSK-AES128-CCM8` is open.** The broker offers it, but it could not be
-exercised here: on this OpenSSL build no CCM8 suite is negotiable between an
-OpenSSL client and server at all, PSK or ECDHE, even at security level 0
-with the suite named explicitly on both sides. It still appears in `openssl
-ciphers` output, which is why a build-time `openssl ciphers | grep CCM8`
-check passes and proves less than it looks like it does. That check is worth
-re-reading wherever it is used. The real CCM8 client is mbedTLS on the
-device, so this is verified on the bench and against the VPS's own OpenSSL,
-not here.
+**`PSK-AES128-CCM8` is still open**, and one attempt to close it is worth
+recording because it nearly went in as a pass.
+
+The broker offers CCM8 first, but it could not be exercised here: on this
+OpenSSL build no CCM8 suite is negotiable between an OpenSSL client and
+server at all, PSK or ECDHE, even at security level 0 with the suite named
+explicitly on both sides. It still appears in `openssl ciphers` output,
+which is why a build-time `openssl ciphers | grep CCM8` check passes and
+proves less than it looks like it does. That check is worth re-reading
+wherever it is used.
+
+The device connector work then reported a Zephyr/mbedTLS client negotiating
+`0x00a8` and read it as CCM8. It is not: `0x00A8` is
+`TLS_PSK_WITH_AES_128_GCM_SHA256` (RFC 5487), and CCM8 is `0xC0A8`
+(RFC 6655). One byte apart in the prefix.
+
+The broker's own configuration is the independent check that settles it.
+CCM8 is **first** in the cipher list and `SSL_OP_CIPHER_SERVER_PREFERENCE`
+is set, so had the client offered CCM8 the server would have chosen it.
+Landing on GCM proves the client did not offer it, which fits a build whose
+mbedTLS or PSA configuration has no CCM enabled. A code point and a
+preference order agreeing is what makes this a correction rather than two
+opinions.
+
+CCM8 therefore stays open, and the way to close it is specific: enable CCM
+in the device build and re-run, expecting `0xC0A8`.
+
+## mbedTLS interoperability, from the device connector work
+
+What that run did establish is worth more than the row it was aimed at. A
+real Zephyr/mbedTLS client interoperates with this broker on both
+handshakes, which no OpenSSL client here can stand in for.
+
+| Mode | Negotiated | Reading |
+|---|---|---|
+| PSK, TLS 1.2 | `0x00A8`, `TLS_PSK_WITH_AES_128_GCM_SHA256` | PSK works end to end with a constrained client; two sessions in one run, initial connect and reconnect |
+| Certificate, TLS 1.2 | `0xC02B`, `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` | all-ECDSA, which is what anchoring the chain at ISRG Root X2 is for, and the device build wants no RSA at all |
+
+The certificate row is also independent confirmation that the TLS 1.2
+cipher-list fix above is right: a real device completing the handshake that
+failed before it.
 
 ## Live, through the broker to dovecote-staging
 
