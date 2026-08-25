@@ -52,7 +52,7 @@ which protocol version each check actually exercised.
 | TLS 1.3 with a PSK offered | certificate handshake, PSK callback not reached |
 | Wrong PSK key | bad-record-mac alert |
 | Unknown PSK identity | alert 115, `unknown_psk_identity` |
-| `PSK-AES128-CCM8` | **not verified**, see below |
+| `PSK-AES128-CCM8` | selected, once the security level was scoped; see below |
 | mbedTLS client, PSK and certificate | interoperates on both, see below |
 
 ## The TLS 1.2 certificate defect, and what hid it
@@ -101,12 +101,14 @@ comments now say what was measured:
   certificate handshake, presents no CONNECT password, and is refused there.
   No session reaches the PSK code by that path.
 
-**`PSK-AES128-CCM8` is not served, and the cause is the security level.**
-This took three wrong explanations to reach, so the mechanism is written out
-with the measurement behind each step.
+## `PSK-AES128-CCM8`, and the security level that was hiding it
 
-The suite is first in the broker's cipher list and is never selected,
-because the broker runs at OpenSSL's **default security level**, which
+CCM8 is served. Getting there took three wrong explanations, so the
+mechanism and the measurement behind each step are written out: the
+misreadings are the useful part, and the fix is one line of consequence.
+
+The suite was first in the broker's cipher list and was never selected,
+because the broker ran at OpenSSL's **default security level**, which
 excludes CCM8 at *selection* time while leaving it in the parsed list.
 Measured, OpenSSL 3.6.3 on both ends:
 
@@ -115,10 +117,10 @@ Measured, OpenSSL 3.6.3 on both ends:
 | `PSK-AES128-CCM8` | `@SECLEVEL=0` | `PSK-AES128-CCM8` |
 | `PSK-AES128-CCM8` | default | nothing |
 
-And against the broker itself, rebuilt with `@SECLEVEL=0` appended to its
-cipher list purely to measure it (the change was reverted, see below):
+And against the broker itself, first as it then shipped, then rebuilt with
+the level relaxed:
 
-| Client offers | Broker as shipped | Broker at `@SECLEVEL=0` |
+| Client offers | Broker before the fix | Broker with the level relaxed |
 |---|---|---|
 | `PSK-AES128-CCM8` alone | nothing: `no shared cipher` | `PSK-AES128-CCM8` |
 | `PSK-AES128-CCM8` + `PSK-AES128-GCM-SHA256` | `PSK-AES128-GCM-SHA256` | `PSK-AES128-CCM8` |

@@ -281,10 +281,12 @@ negotiation can.
 
 Two things follow for `loft` specifically, neither verified here:
 
-- Its OpenSSL DTLS listener presumably runs at the default security level
-  too, in which case it does not serve `PSK-AES128-CCM8` either, whatever
-  its cipher list says. The loopback `s_server` pair above answers it for
-  DTLS with `-dtls1_2` in place of `-tls1_2`.
+- Its OpenSSL DTLS listener presumably runs at the default security level,
+  in which case it does not serve `PSK-AES128-CCM8` whatever its cipher list
+  says. This broker had exactly that problem and now scopes a relaxation to
+  the connections that need it; `loft` has no such scoping. The loopback
+  `s_server` pair above answers it for DTLS with `-dtls1_2` in place of
+  `-tls1_2`.
 - Its mbedTLS CID listener is a different stack and none of this applies to
   it. The CoAP CID work was on that listener, so a device negotiating CCM8
   over CID says nothing about the OpenSSL path.
